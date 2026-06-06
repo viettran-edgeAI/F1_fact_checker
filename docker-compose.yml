@@ -1,0 +1,110 @@
+services:
+  web-app:
+    image: jetson-ocr-web:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+    environment:
+      WEB_APP_DATA_DIR: /app/data/web_app
+      OCR_SERVICE_URL: http://ocr:8000
+      LLM_SERVICE_URL: http://llm:8081
+      WEB_REQUEST_TIMEOUT_SECONDS: 360
+      WEB_APP_SECRET_KEY: ${WEB_APP_SECRET_KEY:-dev-insecure-change-me}
+      WEB_APP_OWNER_EMAIL: ${WEB_APP_OWNER_EMAIL:-}
+      WEB_APP_COOKIE_SECURE: ${WEB_APP_COOKIE_SECURE:-0}
+      WEB_APP_SMTP_HOST: ${WEB_APP_SMTP_HOST:-}
+      WEB_APP_SMTP_PORT: ${WEB_APP_SMTP_PORT:-587}
+      WEB_APP_SMTP_USERNAME: ${WEB_APP_SMTP_USERNAME:-}
+      WEB_APP_SMTP_PASSWORD: ${WEB_APP_SMTP_PASSWORD:-}
+      WEB_APP_SMTP_FROM: ${WEB_APP_SMTP_FROM:-}
+      WEB_APP_SMTP_STARTTLS: ${WEB_APP_SMTP_STARTTLS:-1}
+    depends_on:
+      ocr:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+
+  ocr:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
+    runtime: nvidia
+    env_file:
+      - ./configs/models.container.env
+    depends_on:
+      llm:
+        condition: service_healthy
+    expose:
+      - "8000"
+    volumes:
+      - ./src:/app/src:ro
+      - ${HOME}/models:/models:ro
+      - ./data:/app/data
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OCR_PROFILE: fast
+      OCR_ENGINE: paddle_static
+      OCR_USE_DOCUMENT_STRUCTURE: "1"
+      OCR_TEXT_RECOGNITION_BATCH_SIZE: 4
+      OCR_DATA_DIR: /app/data
+      OCR_DEVICE: gpu:0
+      OCR_PRELOAD_PIPELINE_ON_STARTUP: "1"
+      OCR_WARMUP_ON_STARTUP: "1"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 240s
+      retries: 5
+
+  llm:
+    image: jetson-ocr-llm:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.llm
+      args:
+        DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
+    runtime: nvidia
+    env_file:
+      - ./configs/models.container.env
+    expose:
+      - "8081"
+    volumes:
+      - ./src:/app/src:ro
+      - ${HOME}/models:/models:ro
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      LLAMA_SERVER_BIN: /opt/llama.cpp/build/bin/llama-server
+      LD_LIBRARY_PATH: /opt/llama.cpp/build/bin:/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu/nvidia
+      LLM_CTX_SIZE: 8192
+      LLM_MAX_OCR_CHARS: 6000
+      LLM_MAX_TOKENS: 2048
+      LLM_THINKING_MAX_TOKENS: 2048
+      LLM_DISABLE_THINKING: 0
+      LLM_TEMPERATURE: 0.2
+      LLM_TOP_P: 0.95
+      LLM_TOP_K: 40
+      LLM_PARALLEL: 1
+      LLM_GPU_LAYERS: 999
+      LLM_DEVICE: ""
+      LLM_FLASH_ATTN: ""
+      LLM_FIT: "on"
+      LLM_KV_OFFLOAD: 1
+      LLM_OP_OFFLOAD: 1
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3

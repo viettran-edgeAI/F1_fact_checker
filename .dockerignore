@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.venv
+.venv-1
+.vscode
+data
+models
+__pycache__
+*.pyc
