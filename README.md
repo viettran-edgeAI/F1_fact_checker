@@ -85,6 +85,7 @@ flowchart TD
     P --> Q[Gemma: verdict generation]
     Q --> R[Final fact-check result]
 
+
 Each claim result should clearly state whether it was verified by the local knowledge database, Brave Search web evidence, or both.
 
 ## Current Refactor Status
