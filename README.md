@@ -7,9 +7,39 @@ This repository is being refactored from a completed OCR AI assistant into an F1
 ## Target Architecture
 
 - `web-app`: public browser UI and session layer.
-- `fact-check-service`: central orchestration service for text, URL, and image inputs.
+- `fact-check-service`: central orchestration service for text, URL, and image inputs, including local DB retrieval and Brave Search web evidence.
 - `ocr-service`: private image-to-text backend for screenshots only.
-- `llm-service`: private Gemma/llama wrapper for claim extraction and verdict generation.
+- `llm-service`: private Gemma/llama wrapper for claim extraction, claim classification, search-query generation, and verdict generation.
+
+## Verification Model
+
+Claims are split into two main types after Gemma extracts them:
+
+- Structured factual claims are checked against the local Formula 1 knowledge database using SQLite and FAISS.
+- News / drama / statement claims are checked with Brave Search API, fetched web articles, relevance/reliability ranking, and Gemma verdict generation.
+
+Runtime flow:
+
+```text
+Input: text / URL / screenshot
+↓
+Preprocess input
+↓
+Gemma extracts checkable claims
+↓
+Gemma classifies each claim
+├── Structured factual claim
+│   └── Verify with local Knowledge Database: SQLite + FAISS
+│
+└── News / drama / statement claim
+    └── Verify with Brave Search API + web evidence
+↓
+Gemma generates claim-level verdict
+↓
+Aggregate final verdict
+```
+
+Each claim result should clearly state whether it was verified by the local knowledge database, Brave Search web evidence, or both.
 
 ## Current Refactor Status
 
@@ -28,3 +58,11 @@ Runtime model files are stored outside the repo in `/home/viettran_orin/models`.
 
 - `configs/models.host.env` points local host runs to that model root.
 - `configs/models.container.env` points Docker services to the same model root mounted at `/models`.
+
+## Secrets
+
+Store deployment secrets in the project-root `.env`, not in committed config files. This includes:
+
+- `WEB_APP_SECRET_KEY`
+- SMTP credentials
+- `BRAVE_SEARCH_API_KEY`

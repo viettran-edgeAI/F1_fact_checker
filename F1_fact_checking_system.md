@@ -1,8 +1,10 @@
-# F1 Fact-Checking System: Local Knowledge Database Design
+# F1 Fact-Checking System: Hybrid Knowledge and Web Evidence Design
 
 ## Overview
 
-The recommended workflow for building a local knowledge database for a Formula 1 fact-checking system is:
+The system should use a hybrid verification design.
+
+Structured Formula 1 facts should be verified against the local knowledge database:
 
 ```text
 Formula 1 World Championship Dataset
@@ -12,8 +14,24 @@ Jolpica F1 API
 Local Knowledge Database
         ↓
 SQLite + FAISS
-        ↓
+↓
 RAG with Gemma 4 E2B
+```
+
+News, drama, personal-life, and statement claims should be verified with live web evidence:
+
+```text
+Claim
+        ↓
+Gemma generates search query
+        ↓
+Brave Search API
+        ↓
+Fetch top 3 result articles
+        ↓
+Rank evidence by relevance and reliability
+        ↓
+Gemma compares claim with web evidence
 ```
 
 The system should support three input types:
@@ -22,7 +40,10 @@ The system should support three input types:
 - Screenshot/image input
 - URL input
 
-Regardless of the input type, the system should always use Gemma 4 E2B to extract one or more checkable claims before running retrieval and verification.
+Regardless of the input type, the system should always use Gemma 4 E2B to extract one or more checkable claims. Gemma should then classify each claim into one of two verification streams:
+
+- Structured factual claim: race results, qualifying, standings, calendars, circuits, teams, drivers, championships, and other stable F1 records.
+- News / drama / statement claim: public statements, rumors, controversies, penalties under discussion, contracts not yet represented in the local DB, personal-life claims, paddock drama, and recent news.
 
 ## 1. Role of Each Data Source
 
@@ -62,6 +83,24 @@ Main roles:
 - Resynchronize data when needed.
 
 Jolpica should not be called directly during fact-checking. Instead, it should be used to update SQLite first, and the local database should be used during inference.
+
+### 1.3. Brave Search API
+
+Brave Search API should be used at runtime for claims that cannot be reliably answered from the structured Formula 1 database.
+
+Main roles:
+
+- Search the live web for news, drama, statements, interviews, and personal-life claims.
+- Provide candidate evidence sources for recent or non-structured claims.
+- Help verify claims that depend on article context rather than race-result tables.
+
+Brave Search API belongs inside `fact-check-service`. The service should not expose Brave directly to the browser. `fact-check-service` should call Brave, fetch article text for the top results, rank evidence, and send the claim plus evidence to Gemma for the verdict.
+
+The Brave API key should be stored in the project-root `.env` with other secrets, for example:
+
+```bash
+BRAVE_SEARCH_API_KEY=change-me
+```
 
 ## 2. Database Build Pipeline
 
@@ -320,21 +359,18 @@ Preprocess input into clean text
 ↓
 Gemma 4 E2B extracts checkable claims
 ↓
-For each claim:
-    ↓
-    Extract entities: driver, team, season, race, position, constructor, circuit
-    ↓
-    Query SQLite if the claim is clearly structured
-    ↓
-    Retrieve top-k facts with FAISS
-    ↓
-    Send claim + evidence to Gemma 4 E2B
-    ↓
-    Gemma returns:
-    - SUPPORTS
-    - REFUTES
-    - NOT_ENOUGH_INFO
-    - explanation
+Gemma 4 E2B classifies each claim
+├── Structured factual claim
+│   └── Verify with local Knowledge Database: SQLite + FAISS
+│
+└── News / drama / statement claim
+    └── Verify with Brave Search API + web evidence
+↓
+Gemma returns claim-level verdict:
+- SUPPORTS
+- REFUTES
+- NOT_ENOUGH_INFO
+- explanation
 ↓
 Aggregate claim-level results into a final input-level verdict
 ```
@@ -346,10 +382,65 @@ Article text
 ↓
 Gemma extracts multiple checkable claims
 ↓
-Fact-check each claim with local RAG
+Gemma classifies claims into structured and web-evidence streams
+↓
+Fact-check structured claims with local RAG
+↓
+Fact-check news/drama/statement claims with Brave Search and fetched web evidence
 ↓
 Aggregate the final article-level verdict
 ```
+
+### 8.1. Structured Factual Claim Stream
+
+Use this stream for stable Formula 1 records.
+
+```text
+Claim
+↓
+Extract entities: driver, team, season, race, position, constructor, circuit
+↓
+Query SQLite when entities are clear
+↓
+Retrieve top-k facts with FAISS
+↓
+Merge and rank local evidence
+↓
+Gemma compares claim with local evidence
+↓
+Verdict: SUPPORTS / REFUTES / NOT_ENOUGH_INFO
+```
+
+### 8.2. News / Drama / Statement Claim Stream
+
+Use this stream for claims about current news, public comments, rumors, controversies, contracts, personal lives, or paddock drama.
+
+```text
+Claim
+↓
+Generate search query with Gemma
+↓
+Brave Search API
+↓
+Fetch top n search results, default n=3
+↓
+Fetch full article text
+↓
+Rank evidence by relevance and reliability
+↓
+Gemma compares claim with web evidence
+↓
+Verdict: SUPPORTS / REFUTES / NOT_ENOUGH_INFO
+```
+
+Reliability ranking should prefer primary or high-quality sources:
+
+- FIA, Formula 1, teams, drivers, race organizers, and official statements.
+- Established motorsport outlets with named authors and publication dates.
+- Articles that directly quote the relevant person or organization.
+- Multiple independent sources over single-source rumor reporting.
+
+The output must clearly state the verification source for each claim: local knowledge database, Brave Search web evidence, or both.
 
 ## 9. Recommended Gemma Claim Extraction Output
 
@@ -363,6 +454,7 @@ Suggested format:
     "claim_id": "c001",
     "claim": "Max Verstappen won the 2021 Abu Dhabi Grand Prix.",
     "claim_type": "race_result",
+    "verification_stream": "structured",
     "entities": {
       "driver": "Max Verstappen",
       "constructor": null,
@@ -386,6 +478,19 @@ Recommended claim types:
 - `race_calendar`
 - `circuit_info`
 - `team_driver_relation`
+- `statement`
+- `contract_news`
+- `controversy`
+- `personal_life`
+- `rumor`
+- `breaking_news`
+- `not_f1_claim`
+- `unclear`
+
+Recommended verification streams:
+
+- `structured`
+- `web`
 - `not_f1_claim`
 - `unclear`
 
@@ -401,6 +506,8 @@ Suggested format:
   "claim": "Max Verstappen won the 2021 Abu Dhabi Grand Prix.",
   "verdict": "SUPPORTS",
   "confidence": "high",
+  "verification_stream": "structured",
+  "verified_by": "local_knowledge_database",
   "evidence": [
     {
       "fact_id": "fact_2021_abudhabi_p1",
@@ -412,6 +519,30 @@ Suggested format:
 }
 ```
 
+For a web-evidence claim:
+
+```json
+{
+  "claim_id": "c002",
+  "claim": "A driver publicly criticized his team after the race.",
+  "verdict": "SUPPORTS",
+  "confidence": "medium",
+  "verification_stream": "web",
+  "verified_by": "brave_search_web_evidence",
+  "evidence": [
+    {
+      "title": "Example F1 news article",
+      "url": "https://example.com/f1-news",
+      "source_domain": "example.com",
+      "published_at": "2026-05-20",
+      "snippet": "Relevant paraphrased evidence from the article.",
+      "reliability": "medium"
+    }
+  ],
+  "explanation": "The web evidence includes a direct post-race quote that supports the claim."
+}
+```
+
 Allowed verdict labels:
 
 - `SUPPORTS`
@@ -420,9 +551,11 @@ Allowed verdict labels:
 
 ## 11. Important Design Rule
 
-Gemma 4 E2B should be used in two separate stages:
+Gemma 4 E2B should be used in separate stages:
 
 1. Claim extraction from the cleaned input.
-2. Verdict generation from each claim plus retrieved evidence.
+2. Claim classification into structured factual claims or news/drama/statement claims.
+3. Search-query generation for web-evidence claims.
+4. Verdict generation from each claim plus retrieved local or web evidence.
 
 The retrieval system should not depend on raw user text directly. This makes the system more robust across text input, screenshots, and URLs.

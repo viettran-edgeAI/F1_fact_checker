@@ -161,6 +161,11 @@ SYSTEM_PROMPT = (
     "Use OCR Markdown context when relevant. If OCR lacks details, you may use "
     "general knowledge and briefly state that OCR lacked details."
 )
+FAST_MODE_PROMPT = "Do not include hidden reasoning. Provide only the final answer."
+THINKING_MODE_PROMPT = (
+    "Thinking mode is active. If reasoning is useful, keep it concise and user-facing, "
+    "then provide the final answer."
+)
 
 
 @app.get("/healthz")
@@ -385,7 +390,7 @@ def build_chat_payload(
         truncation_note = (
             "\n\nNote: OCR Markdown was truncated to fit the configured context cap."
         )
-    system_content = SYSTEM_PROMPT
+    system_content = build_system_prompt(request.thinking_mode)
     if has_ocr_context:
         ocr_context = (
             "OCR Markdown appended to this session:\n"
@@ -394,7 +399,7 @@ def build_chat_payload(
             "```"
             f"{truncation_note}"
         )
-        system_content = f"{SYSTEM_PROMPT}\n\n{ocr_context}"
+        system_content = f"{system_content}\n\n{ocr_context}"
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
     messages.extend(prepare_conversation_history(request.conversation_history))
@@ -413,6 +418,13 @@ def build_chat_payload(
         payload["stream_options"] = {"include_usage": True}
     apply_thinking_mode(payload, request.thinking_mode)
     return payload
+
+
+def build_system_prompt(thinking_mode: str) -> str:
+    mode_prompt = FAST_MODE_PROMPT
+    if thinking_mode == "thinking" and not DISABLE_THINKING:
+        mode_prompt = THINKING_MODE_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n{mode_prompt}"
 
 
 def build_warmup_payload() -> dict[str, Any]:

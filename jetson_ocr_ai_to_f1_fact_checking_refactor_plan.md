@@ -25,7 +25,12 @@ User input
 └── Screenshot/image of an F1 news article
 ```
 
-All input types should be normalized into clean text first. Then Gemma should extract checkable claims, the local F1 knowledge database should retrieve evidence, and Gemma should generate claim-level verdicts and a final explanation.
+All input types should be normalized into clean text first. Then Gemma should extract checkable claims and classify each claim into one of two verification streams:
+
+- Structured factual claims: verify with the local F1 knowledge database, SQLite, and FAISS.
+- News / drama / statement claims: verify with Brave Search API and fetched web evidence.
+
+Gemma should generate claim-level verdicts from the selected evidence stream and then produce a final explanation.
 
 Target output area:
 
@@ -34,7 +39,7 @@ Fact-check result
 ├── Overall verdict
 ├── Extracted claims
 ├── Verdict for each claim
-└── Explanation from Gemma based on the local knowledge database
+└── Explanation from Gemma based on local DB and/or web evidence
 ```
 
 ## Target Service Boundary
@@ -52,7 +57,9 @@ fact-check-service
 ├── Main orchestration service
 ├── Text / URL / image input preprocessing
 ├── Claim extraction workflow
+├── Claim classification workflow
 ├── SQLite + FAISS retrieval
+├── Brave Search API + web evidence retrieval
 ├── Claim-level verdict generation
 └── Final result aggregation
 
@@ -148,6 +155,8 @@ After the refactor, the repository should look like this:
 │   │   ├── ocr_client.py
 │   │   ├── llm_client.py
 │   │   ├── retrieval.py
+│   │   ├── web_search.py
+│   │   ├── web_evidence.py
 │   │   ├── verdict.py
 │   │   ├── aggregation.py
 │   │   ├── evidence_formatter.py
@@ -270,7 +279,10 @@ Responsibilities:
 - call `ocr-service` for screenshot/image input
 - fetch and clean URL article content
 - call `llm-service` for claim extraction
-- query SQLite and FAISS for evidence
+- call `llm-service` for claim classification
+- query SQLite and FAISS for structured factual evidence
+- call Brave Search API for news/drama/statement claims
+- fetch and rank web evidence from the top search results
 - call `llm-service` for verdict generation
 - aggregate claim verdicts into the final result
 
@@ -471,6 +483,18 @@ URL_FETCH_MAX_BYTES=3000000
 URL_ALLOWED_SCHEMES=http,https
 
 FACT_SAVE_REQUEST_ARTIFACTS=1
+
+BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+BRAVE_SEARCH_ENDPOINT=https://api.search.brave.com/res/v1/web/search
+BRAVE_SEARCH_TOP_N=3
+WEB_EVIDENCE_FETCH_TIMEOUT_SECONDS=10
+WEB_EVIDENCE_MAX_CHARS_PER_SOURCE=12000
+```
+
+`BRAVE_SEARCH_API_KEY` is a secret. Store the real value in the project-root `.env`, in the same group as `WEB_APP_SECRET_KEY`, SMTP username/password, and other deployment secrets. Example:
+
+```bash
+BRAVE_SEARCH_API_KEY=change-me
 ```
 
 ## 7. Updated Docker Compose Shape
@@ -563,7 +587,7 @@ New:
 
 ```text
 F1 Fact Checker
-Check Formula 1 news against a local knowledge database
+Check Formula 1 news against local records and web evidence
 ```
 
 #### Input area
@@ -1023,6 +1047,7 @@ Response:
       "claim_id": "c001",
       "claim": "Max Verstappen won the 2021 Abu Dhabi Grand Prix.",
       "claim_type": "race_result",
+      "verification_stream": "structured",
       "entities": {
         "driver": "Max Verstappen",
         "constructor": null,
@@ -1148,7 +1173,12 @@ Preprocess into clean text
 ↓
 Extract claims with Gemma
 ↓
-Retrieve evidence from SQLite + FAISS
+Classify claims with Gemma
+├── Structured factual claim
+│   └── Retrieve evidence from SQLite + FAISS
+│
+└── News / drama / statement claim
+    └── Retrieve evidence from Brave Search API + fetched web articles
 ↓
 Generate verdicts with Gemma
 ↓
@@ -1237,6 +1267,8 @@ Return a stable result shape for the web app:
       "claim": "Max Verstappen won the 2021 Abu Dhabi Grand Prix.",
       "verdict": "SUPPORTS",
       "confidence": "high",
+      "verification_stream": "structured",
+      "verified_by": "local_knowledge_database",
       "evidence": [
         {
           "fact_id": "fact_2021_abudhabi_p1",
@@ -1248,7 +1280,7 @@ Return a stable result shape for the web app:
       "explanation": "The local database supports this claim."
     }
   ],
-  "explanation": "Most claims are supported, but one claim could not be verified from the local database.",
+  "explanation": "Most claims are supported. Structured claims were checked against the local database, while news/drama/statement claims were checked against web evidence.",
   "warnings": [],
   "timings_ms": {
     "preprocess": 120,
@@ -1325,6 +1357,7 @@ Rules:
 - Non-F1 claims should be labeled `not_f1_claim`.
 - Vague claims should be labeled `unclear`.
 - Claims without enough concrete entities should either be skipped or marked `NOT_ENOUGH_INFO`.
+- Each claim must be classified into a verification stream before evidence retrieval.
 
 Recommended claim types:
 
@@ -1337,13 +1370,39 @@ championship_result
 race_calendar
 circuit_info
 team_driver_relation
+statement
+contract_news
+controversy
+personal_life
+rumor
+breaking_news
 not_f1_claim
 unclear
 ```
 
+Recommended verification streams:
+
+```text
+structured
+web
+not_f1_claim
+unclear
+```
+
+Classification rule:
+
+- Use `structured` for stable records that belong in the local knowledge database.
+- Use `web` for public statements, interviews, rumors, controversies, contracts, personal-life claims, and current news.
+- Use `not_f1_claim` for claims outside Formula 1.
+- Use `unclear` when Gemma cannot identify a checkable claim or cannot route it safely.
+
 ### 4.6. Evidence Retrieval
 
-Use two retrieval paths:
+Use separate retrieval paths based on `verification_stream`.
+
+#### Structured factual claim retrieval
+
+Use two local retrieval methods:
 
 ```text
 Structured SQLite retrieval
@@ -1398,17 +1457,62 @@ Suggested source priority:
 structured SQL exact match > FAISS high score > FAISS lower score
 ```
 
+#### News / drama / statement claim retrieval
+
+Use Brave Search API and fetched web article text.
+
+```text
+Claim
+↓
+Generate search query with Gemma
+↓
+Brave Search API
+↓
+Fetch top n search results, default n=3
+↓
+Fetch full article text
+↓
+Rank evidence by relevance and reliability
+↓
+Gemma compares claim with web evidence
+↓
+Verdict: SUPPORTS / REFUTES / NOT_ENOUGH_INFO
+```
+
+Reliability ranking should prefer:
+
+- Official sources: FIA, Formula 1, teams, drivers, race organizers, and published statements.
+- Established motorsport outlets with named authors and clear publication dates.
+- Sources that directly quote the relevant person or organization.
+- Multiple independent sources over one weak or rumor-only article.
+
+Suggested source priority:
+
+```text
+official source > direct quote/interview > reputable motorsport outlet > syndicated/general news > rumor/aggregation site
+```
+
+The evidence object for web claims should include title, URL, source domain, publication date when available, snippet or extracted passage, reliability label, and relevance score.
+
 ### 4.7. Verdict Generation
 
 For each claim, send the claim and evidence to `llm-service`.
 
-The model must only use retrieved evidence. It must not invent race results from general knowledge.
+The model must only use retrieved evidence. It must not invent race results, statements, rumors, or news context from general knowledge.
 
 Rules:
 
 - If evidence directly supports the claim: `SUPPORTS`
 - If evidence contradicts the claim: `REFUTES`
 - If evidence is missing or too weak: `NOT_ENOUGH_INFO`
+
+The verdict output must clearly state the verification source:
+
+```text
+verified_by = local_knowledge_database
+verified_by = brave_search_web_evidence
+verified_by = local_knowledge_database_and_web_evidence
+```
 
 ### 4.8. Overall Verdict Aggregation
 
@@ -1437,7 +1541,9 @@ The final explanation should summarize:
 - how many were supported
 - how many were refuted
 - which claims lacked enough evidence
-- that the result is based on the local F1 knowledge database
+- which claims used the local F1 knowledge database
+- which claims used Brave Search web evidence
+- which sources were most important for the final result
 
 ### 4.9. Knowledge Database Build
 
@@ -1518,11 +1624,14 @@ CREATE INDEX idx_facts_relation ON facts(relation);
 
 - Text, URL, and image inputs all become clean text.
 - Gemma is always used for claim extraction.
-- SQLite + FAISS evidence retrieval works locally.
+- Gemma is used again for claim classification.
+- SQLite + FAISS evidence retrieval works locally for structured claims.
+- Brave Search API + fetched web evidence works for news/drama/statement claims.
 - Jolpica sync is an offline/admin update path, not a runtime verification path.
 - Each claim gets `SUPPORTS`, `REFUTES`, or `NOT_ENOUGH_INFO`.
 - The response contains `overall_verdict`, `extracted_claims`, `claim_verdicts`, and `explanation`.
 - All generated explanations are grounded in retrieved evidence.
+- Each claim verdict clearly states whether it was verified by local DB evidence, Brave web evidence, or both.
 - Debug artifacts can be saved but are not required for the main UI.
 
 ---
@@ -1602,6 +1711,9 @@ Tasks:
 - Add OCR client.
 - Add LLM client.
 - Add retrieval module.
+- Add claim classification module.
+- Add Brave Search client.
+- Add web article fetch and evidence ranking module.
 - Add verdict generation module.
 - Add response aggregation.
 - Add stable API schemas.
@@ -1673,7 +1785,7 @@ Fact-check result
 ├── Overall verdict
 ├── Extracted claims
 ├── Verdict for each claim
-└── Explanation from Gemma based on the local knowledge database
+└── Explanation from Gemma based on local DB and/or web evidence
 ```
 
 ---
@@ -1696,7 +1808,12 @@ fact-check-service preprocesses input
 ↓
 fact-check-service calls llm-service to extract claims
 ↓
-fact-check-service retrieves evidence from SQLite + FAISS
+fact-check-service calls llm-service to classify claims
+├── structured factual claims:
+│   └── retrieve evidence from SQLite + FAISS
+│
+└── news / drama / statement claims:
+    └── use Brave Search API, fetch top 3 articles, and rank web evidence
 ↓
 fact-check-service calls llm-service for claim verdicts
 ↓
@@ -1706,7 +1823,7 @@ web-app renders:
     ├── Overall verdict
     ├── Extracted claims
     ├── Verdict for each claim
-    └── Explanation from Gemma based on the local knowledge database
+    └── Explanation from Gemma based on local DB and/or web evidence
 ```
 
 ## Recommended Rule for This Refactor
