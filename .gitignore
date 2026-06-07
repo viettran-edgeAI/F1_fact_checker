@@ -13,7 +13,9 @@ data/
 wheels/
 tests/*
 !tests/test_f1_knowledge_database.py
+!tests/test_fact_check_text_flow.py
 !tests/test_ocr_service_api.py
+!tests/test_web_app_fact_check.py
 test_set/
 scripts/*
 !scripts/build_f1_database.py

@@ -99,6 +99,8 @@ class SessionStore:
                     filename TEXT NOT NULL,
                     content_type TEXT NOT NULL,
                     original_path TEXT NOT NULL,
+                    input_type TEXT,
+                    input_preview TEXT,
                     ocr_markdown_path TEXT,
                     status TEXT NOT NULL,
                     error TEXT,
@@ -122,6 +124,36 @@ class SessionStore:
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS fact_check_runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    input_type TEXT NOT NULL,
+                    source_url TEXT,
+                    source_title TEXT,
+                    source_domain TEXT,
+                    image_path TEXT,
+                    cleaned_text_path TEXT,
+                    result_json_path TEXT NOT NULL,
+                    overall_verdict TEXT,
+                    elapsed_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS claim_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    claim_id TEXT NOT NULL,
+                    claim_text TEXT NOT NULL,
+                    claim_type TEXT,
+                    verdict TEXT NOT NULL,
+                    confidence REAL,
+                    explanation TEXT,
+                    evidence_json TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES fact_check_runs(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS rate_limit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     owner_type TEXT NOT NULL,
@@ -134,6 +166,10 @@ class SessionStore:
                     ON sessions(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_session_id
                     ON messages(session_id, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_fact_check_runs_session_id
+                    ON fact_check_runs(session_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_claim_results_run_id
+                    ON claim_results(run_id, id ASC);
                 CREATE INDEX IF NOT EXISTS idx_auth_sessions_token_hash
                     ON auth_sessions(token_hash);
                 CREATE INDEX IF NOT EXISTS idx_rate_limit_events_owner_action_created_at
@@ -162,6 +198,8 @@ class SessionStore:
             connection.execute("DROP INDEX IF EXISTS idx_users_username_unique")
             self._ensure_column(connection, "sessions", "owner_type", "TEXT NOT NULL DEFAULT 'user'")
             self._ensure_column(connection, "sessions", "owner_id", "TEXT NOT NULL DEFAULT 'legacy-owner'")
+            self._ensure_column(connection, "sessions", "input_type", "TEXT")
+            self._ensure_column(connection, "sessions", "input_preview", "TEXT")
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_sessions_owner_updated_at
@@ -695,15 +733,17 @@ class SessionStore:
         original_path: Path | str,
         created_at: str,
         status: str = "uploading",
+        input_type: str | None = None,
+        input_preview: str | None = None,
     ) -> dict[str, Any]:
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO sessions (
                     id, owner_type, owner_id, filename, content_type, original_path,
-                    status, created_at, updated_at
+                    input_type, input_preview, status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -712,6 +752,8 @@ class SessionStore:
                     filename,
                     content_type,
                     str(original_path),
+                    input_type,
+                    input_preview,
                     status,
                     created_at,
                     created_at,
@@ -829,6 +871,13 @@ class SessionStore:
             return None
         with self.connect() as connection:
             connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            run_rows = connection.execute(
+                "SELECT id FROM fact_check_runs WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            for run in run_rows:
+                connection.execute("DELETE FROM claim_results WHERE run_id = ?", (run["id"],))
+            connection.execute("DELETE FROM fact_check_runs WHERE session_id = ?", (session_id,))
             if owner_type and owner_id:
                 connection.execute(
                     "DELETE FROM sessions WHERE id = ? AND owner_type = ? AND owner_id = ?",
@@ -866,8 +915,33 @@ class SessionStore:
                 """,
                 (session_id,),
             ).fetchall()
+            runs = connection.execute(
+                """
+                SELECT *
+                FROM fact_check_runs
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                """,
+                (session_id,),
+            ).fetchall()
+            run_payloads: list[dict[str, Any]] = []
+            for run in runs:
+                run_dict = dict(run)
+                claims = connection.execute(
+                    """
+                    SELECT claim_id, claim_text, claim_type, verdict, confidence,
+                           explanation, evidence_json
+                    FROM claim_results
+                    WHERE run_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (run_dict["id"],),
+                ).fetchall()
+                run_dict["claims"] = [dict(claim) for claim in claims]
+                run_payloads.append(run_dict)
         session = dict(row)
         session["messages"] = [dict(message) for message in messages]
+        session["fact_check_runs"] = run_payloads
         return session
 
     def recent_sessions(
@@ -875,12 +949,17 @@ class SessionStore:
         limit: int = 8,
         owner_type: str | None = None,
         owner_id: str | None = None,
+        content_type: str | None = None,
     ) -> list[dict[str, Any]]:
-        where = ""
+        clauses: list[str] = []
         values: list[Any] = []
         if owner_type and owner_id:
-            where = "WHERE owner_type = ? AND owner_id = ?"
+            clauses.append("owner_type = ? AND owner_id = ?")
             values.extend([owner_type, owner_id])
+        if content_type:
+            clauses.append("content_type = ?")
+            values.append(content_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         values.append(limit)
         with self.connect() as connection:
             rows = connection.execute(
@@ -918,11 +997,85 @@ class SessionStore:
             for row in rows:
                 session_id = str(row["id"])
                 connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                run_rows = connection.execute(
+                    "SELECT id FROM fact_check_runs WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+                for run in run_rows:
+                    connection.execute("DELETE FROM claim_results WHERE run_id = ?", (run["id"],))
+                connection.execute("DELETE FROM fact_check_runs WHERE session_id = ?", (session_id,))
                 connection.execute(
                     "DELETE FROM sessions WHERE id = ? AND owner_type = ? AND owner_id = ?",
                     (session_id, owner_type, owner_id),
                 )
         return pruned
+
+    def create_fact_check_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        input_type: str,
+        result_json_path: Path | str,
+        created_at: str,
+        source_url: str | None = None,
+        source_title: str | None = None,
+        source_domain: str | None = None,
+        image_path: Path | str | None = None,
+        cleaned_text_path: Path | str | None = None,
+        overall_verdict: str | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO fact_check_runs (
+                    id, session_id, input_type, source_url, source_title, source_domain,
+                    image_path, cleaned_text_path, result_json_path, overall_verdict,
+                    elapsed_ms, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    session_id,
+                    input_type,
+                    source_url,
+                    source_title,
+                    source_domain,
+                    str(image_path) if image_path else None,
+                    str(cleaned_text_path) if cleaned_text_path else None,
+                    str(result_json_path),
+                    overall_verdict,
+                    elapsed_ms,
+                    created_at,
+                    created_at,
+                ),
+            )
+
+    def replace_claim_results(self, *, run_id: str, claims: list[dict[str, Any]]) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM claim_results WHERE run_id = ?", (run_id,))
+            for claim in claims:
+                connection.execute(
+                    """
+                    INSERT INTO claim_results (
+                        run_id, claim_id, claim_text, claim_type, verdict,
+                        confidence, explanation, evidence_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        claim["claim_id"],
+                        claim["claim_text"],
+                        claim.get("claim_type"),
+                        claim["verdict"],
+                        claim.get("confidence"),
+                        claim.get("explanation"),
+                        claim["evidence_json"],
+                    ),
+                )
 
     def count_rate_limit_events(
         self,

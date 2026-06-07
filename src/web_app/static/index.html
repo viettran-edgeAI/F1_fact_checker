@@ -3,23 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OCR AI Assistant</title>
+    <title>F1 Fact Checker</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar" aria-label="Application header">
         <div class="brand">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M7 3.5h6.7L18 7.8v12.7H7z" />
-              <path d="M13.6 3.8v4.4h4.1" />
-              <path d="M9.4 12.2h5.2M9.4 15.4h5.2" />
-            </svg>
-          </div>
+          <div class="brand-mark" aria-hidden="true">F1</div>
           <div>
-            <h1>OCR AI Assistant</h1>
-            <p>Extract text and get intelligent answers</p>
+            <h1>F1 Fact Checker</h1>
+            <p>Check Formula 1 news against local records and web evidence</p>
           </div>
         </div>
         <div class="utility-actions">
@@ -27,7 +21,6 @@
             <span class="account-name" id="accountName">Guest</span>
           </button>
           <nav class="site-actions" aria-label="Site actions">
-            <button class="ghost-button" id="pricingButton" type="button">Pricing</button>
             <button class="ghost-button" id="loginButton" type="button">Log in</button>
             <button class="ghost-button" id="signupButton" type="button">Sign up</button>
             <button class="ghost-button" id="logoutButton" type="button">Log out</button>
@@ -47,158 +40,99 @@
         </div>
       </header>
 
-      <section class="workspace" aria-label="OCR workspace">
+      <section class="workspace" aria-label="F1 fact-check workspace">
         <section class="panel input-panel" aria-label="Input">
-          <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Upload or paste a document">
-            <input id="fileInput" type="file" accept=".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf" hidden />
-            <div class="drop-content">
-              <svg class="upload-cloud" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M16.9 18H18a4 4 0 0 0 .4-8 6.5 6.5 0 0 0-12.2-2.1A4.8 4.8 0 0 0 6 17.5h1.1" />
-                <path d="M12 12v8" />
-                <path d="m8.7 15.2 3.3-3.3 3.3 3.3" />
-              </svg>
-              <p class="drop-title" id="dropTitle">Attach a document anytime</p>
-              <p class="drop-subtitle">Supports: PNG, JPG, JPEG, PDF</p>
-              <div class="selected-file" id="selectedFilePreview" hidden></div>
-              <button class="primary-upload" id="uploadButton" type="button">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3v12" />
-                  <path d="m8 7 4-4 4 4" />
-                  <path d="M5 15v4h14v-4" />
+          <div class="mode-tabs" role="tablist" aria-label="Input type">
+            <button class="mode-tab is-active" type="button" role="tab" aria-selected="true" data-mode="text">Text</button>
+            <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="url">URL</button>
+            <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="image">Image</button>
+          </div>
+
+          <div class="input-mode" id="textMode">
+            <label class="field-label" for="textInput">Plain text</label>
+            <textarea id="textInput" rows="12" placeholder="Paste an F1 claim, headline, or article excerpt..."></textarea>
+          </div>
+
+          <div class="input-mode" id="urlMode" hidden>
+            <label class="field-label" for="urlInput">Article URL</label>
+            <input id="urlInput" type="url" placeholder="https://example.com/f1-news-article" />
+          </div>
+
+          <div class="input-mode" id="imageMode" hidden>
+            <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Upload or paste a screenshot">
+              <input id="fileInput" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" hidden />
+              <div class="drop-content">
+                <svg class="upload-cloud" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M16.9 18H18a4 4 0 0 0 .4-8 6.5 6.5 0 0 0-12.2-2.1A4.8 4.8 0 0 0 6 17.5h1.1" />
+                  <path d="M12 12v8" />
+                  <path d="m8.7 15.2 3.3-3.3 3.3 3.3" />
                 </svg>
-                Upload files
-              </button>
-              <button class="convert-button" id="convertButton" type="button" hidden>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12h13" />
-                  <path d="m14 8 4 4-4 4" />
-                </svg>
-                Convert
-              </button>
-              <button class="start-again-button" id="startAgainButton" type="button" hidden>
-                Start again
-              </button>
-              <p class="upload-limit" id="uploadLimitStatus" aria-live="polite"></p>
-              <p class="state-text" id="uploadState" aria-live="polite"></p>
+                <p class="drop-title" id="dropTitle">Upload or paste a screenshot</p>
+                <p class="drop-subtitle">Supports PNG, JPG, and JPEG</p>
+                <div class="selected-file" id="selectedFilePreview" hidden></div>
+                <button class="secondary-button" id="uploadButton" type="button">Choose image</button>
+              </div>
             </div>
           </div>
+
+          <div class="action-row">
+            <button class="primary-button" id="checkButton" type="button">Check F1 News</button>
+            <button class="ghost-button" id="clearButton" type="button">Clear</button>
+          </div>
+          <p class="upload-limit" id="uploadLimitStatus" aria-live="polite"></p>
+          <p class="state-text" id="uploadState" aria-live="polite"></p>
         </section>
 
-        <section class="panel output-panel" aria-label="Output">
-          <div class="output-card" id="outputCard">
-            <div class="empty-output" id="emptyOutput">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 3.5h7l4 4v13H7z" />
-                <path d="M14 3.7v4.1h4" />
-                <path d="M10 12h5M10 15.5h5" />
-              </svg>
-              <p>Start chatting, or attach a document for OCR context</p>
-            </div>
-            <section class="ocr-panel" id="ocrPanel" hidden>
-              <div class="ocr-toolbar">
-                <span class="ocr-label">OCR result</span>
-                <div class="ocr-actions">
-                  <span class="copy-status" id="copyOcrStatus" aria-live="polite"></span>
-                  <button class="copy-button" id="copyOcrButton" type="button">Copy</button>
-                </div>
-              </div>
-              <article class="ocr-result" id="ocrResult"></article>
+        <section class="panel output-panel" aria-label="Fact-check result">
+          <div class="progress-list" id="progressList" hidden>
+            <div data-step="preprocessing">Preparing input...</div>
+            <div data-step="extracting_claims">Extracting claims...</div>
+            <div data-step="retrieving_evidence">Retrieving evidence...</div>
+            <div data-step="generating_verdict">Generating verdict...</div>
+          </div>
+
+          <div class="empty-output" id="emptyOutput">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 12h10" />
+              <path d="m13 8 4 4-4 4" />
+              <path d="M4 5h16v14H4z" />
+            </svg>
+            <p>Submit text, a URL, or a screenshot to start a fact-check run.</p>
+          </div>
+
+          <article class="result-shell" id="resultShell" hidden>
+            <section class="result-section">
+              <span class="section-kicker">Overall verdict</span>
+              <div class="verdict-pill" id="overallVerdict">NOT_ENOUGH_INFO</div>
             </section>
-            <article class="answer-result" id="answerResult" hidden></article>
-          </div>
-
-          <form class="prompt-form" id="promptForm">
-            <div class="thinking-mode-wrap" id="thinkingModeWrap">
-              <button
-                class="thinking-mode-button"
-                id="thinkingModeButton"
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded="false"
-              >
-                <span id="thinkingModeLabel">Fast</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 10 5 5 5-5" />
-                </svg>
-              </button>
-              <div class="thinking-mode-menu" id="thinkingModeMenu" role="listbox" aria-label="Thinking mode" hidden>
-                <button type="button" role="option" data-thinking-mode="fast" aria-selected="true">Fast</button>
-                <button type="button" role="option" data-thinking-mode="thinking" aria-selected="false">Thinking</button>
-              </div>
-            </div>
-            <input id="promptInput" type="text" autocomplete="off" placeholder="Ask anything, or attach a document for OCR context..." />
-            <button class="send-button" id="sendButton" type="submit" aria-label="Send prompt" title="Send prompt">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 4.5 20 12 4 19.5v-6l9-1.5-9-1.5z" />
-              </svg>
-            </button>
-          </form>
-
-          <div class="quick-actions">
-            <button type="button" data-mode="answer">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 5h14v10H8l-3 3z" />
-                <path d="M9 9h.01M12 9h.01M15 9h.01" />
-              </svg>
-              Answer the question(s)
-            </button>
-            <div class="quick-action-translate" id="translateQuickAction">
-              <button type="button" class="quick-action-main" data-mode="translate">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 7h8" />
-                  <path d="M9 5v2c0 3-1.2 5.7-3.3 7.7" />
-                  <path d="m6.1 11.8 2.6 2.9 3.2 3.3" />
-                  <path d="M14 7h5" />
-                  <path d="m16.2 5 3.8 10" />
-                  <path d="m14.7 12.2 4.1-.1" />
-                </svg>
-                Translate to
-              </button>
-              <div class="quick-action-language">
-                <button
-                  type="button"
-                  class="quick-action-language-button"
-                  id="translateLanguageButton"
-                  aria-haspopup="listbox"
-                  aria-expanded="false"
-                >
-                  <span id="translateLanguageLabel">Vietnamese</span>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m7 10 5 5 5-5" />
-                  </svg>
-                </button>
-                <div
-                  class="quick-action-language-menu"
-                  id="translateLanguageMenu"
-                  role="listbox"
-                  aria-label="Translation language"
-                  hidden
-                >
-                  <button type="button" role="option" data-translate-language="Vietnamese" aria-selected="true">Vietnamese</button>
-                  <button type="button" role="option" data-translate-language="English" aria-selected="false">English</button>
-                  <button type="button" role="option" data-translate-language="Chinese" aria-selected="false">Chinese</button>
-                  <button type="button" role="option" data-translate-language="Japanese" aria-selected="false">Japanese</button>
-                  <button type="button" role="option" data-translate-language="Korean" aria-selected="false">Korean</button>
-                  <button type="button" role="option" data-translate-language="Russian" aria-selected="false">Russian</button>
-                  <button type="button" role="option" data-translate-language="Thai" aria-selected="false">Thai</button>
-                  <button type="button" role="option" data-translate-language="French" aria-selected="false">French</button>
-                  <button type="button" role="option" data-translate-language="German" aria-selected="false">German</button>
-                  <button type="button" role="option" data-translate-language="Spanish" aria-selected="false">Spanish</button>
-                </div>
-              </div>
-            </div>
-          </div>
+            <section class="result-section">
+              <span class="section-kicker">Extracted claims</span>
+              <div class="claims-list" id="claimsList"></div>
+            </section>
+            <section class="result-section">
+              <span class="section-kicker">Claim verdicts</span>
+              <div class="claim-verdicts" id="claimVerdicts"></div>
+            </section>
+            <section class="result-section">
+              <span class="section-kicker">Final explanation</span>
+              <p class="summary-text" id="summaryText"></p>
+            </section>
+            <details class="debug-details" id="debugDetails">
+              <summary>Debug details</summary>
+              <pre id="debugPayload"></pre>
+            </details>
+          </article>
         </section>
       </section>
 
-      <section class="recent-shell" aria-label="Recent sessions">
+      <section class="recent-shell" aria-label="Recent fact-check runs">
         <div class="section-title recent-title">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 12a8 8 0 1 0 2.3-5.7" />
             <path d="M4 4v5h5" />
             <path d="M12 7v5l3 2" />
           </svg>
-          <h2>RECENT SESSIONS</h2>
+          <h2>RECENT FACT-CHECKS</h2>
         </div>
         <div class="recent-panel">
           <div class="recent-header">
@@ -257,43 +191,39 @@
               <input id="emailVerificationCode" type="text" inputmode="numeric" autocomplete="one-time-code" />
             </label>
           </div>
-          <button class="primary-upload" id="authSubmitButton" type="submit">Log in</button>
+          <button class="primary-button full-width" id="authSubmitButton" type="submit">Log in</button>
           <p class="state-text" id="authStatus" aria-live="polite"></p>
         </form>
       </div>
     </div>
 
     <div class="auth-modal" id="accountModal" hidden>
-      <div class="auth-dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+      <div class="auth-dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="accountPanelUsername">
         <div class="auth-header">
-          <h2 id="accountTitle">Account</h2>
+          <h2 id="accountPanelUsername">Account</h2>
           <button class="icon-button" id="accountCloseButton" type="button" aria-label="Close" title="Close">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6 6l12 12M18 6 6 18" />
             </svg>
           </button>
         </div>
-        <div class="account-panel" id="accountPanel">
+        <div class="account-panel">
           <div class="account-summary">
+            <strong id="accountEmail">Guest</strong>
             <span class="account-chip tier-gray" id="accountTierChip">GUEST</span>
-            <strong id="accountPanelUsername">Guest</strong>
           </div>
-          <dl class="account-details" id="accountDetails">
-            <div>
-              <dt>Email</dt>
-              <dd id="accountEmail">Sign in to manage an account.</dd>
-            </div>
+          <dl class="account-details">
             <div>
               <dt>Tier</dt>
               <dd id="accountTierValue">Guest</dd>
             </div>
             <div>
               <dt>Usage</dt>
-              <dd id="accountUsage">OCR uploads: 10/10 remaining this hour.</dd>
+              <dd id="accountUsage">Loading...</dd>
             </div>
           </dl>
           <div class="account-actions">
-            <button class="ghost-button" id="accountUpgradeButton" type="button">Upgrade account</button>
+            <button class="ghost-button" id="accountUpgradeButton" type="button">Upgrade</button>
             <button class="ghost-button danger-ghost" id="accountDeleteButton" type="button">Delete account</button>
           </div>
           <p class="state-text" id="accountStatusMessage" aria-live="polite"></p>
@@ -313,37 +243,17 @@
         </div>
         <div class="account-panel">
           <div class="help-block">
-            <h3>About this app</h3>
-            <p>Paste images/documents, extract OCR text, and get high-speed answers in one workspace.</p>
+            <h3>Inputs</h3>
+            <p>Use text for claims and excerpts, URL for F1 articles, and image for screenshots.</p>
           </div>
           <div class="help-block">
-            <h3>How to use</h3>
-            <ul>
-              <li>Upload or paste image/PDF files into the input area.</li>
-              <li>Use the Copy button to copy OCR results quickly.</li>
-              <li>Chat directly, or use quick prompts: <strong>Answer the question(s)</strong> and <strong>Translate to Vietnamese</strong>.</li>
-            </ul>
-          </div>
-          <div class="help-block">
-            <h3>Contact owner</h3>
-            <p><a href="mailto:tranvaviet@gmail.com">tranvaviet@gmail.com</a></p>
+            <h3>Verdicts</h3>
+            <p>Results are generated from local F1 records, Brave Search web evidence, or both.</p>
           </div>
         </div>
       </div>
     </div>
 
-    <script>
-      window.MathJax = {
-        tex: {
-          displayMath: [["\\[", "\\]"], ["$$", "$$"]],
-          inlineMath: [["\\(", "\\)"]],
-        },
-        options: {
-          skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"],
-        },
-      };
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" defer></script>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js"></script>
   </body>
 </html>

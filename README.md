@@ -43,12 +43,22 @@ Each claim result should clearly state whether it was verified by the local know
 
 ## Current Refactor Status
 
-Step 1 is in progress/completed for the backend foundation:
+The backend foundation and public web-app refactor are now in progress/completed:
 
 - OCR service now exposes image-only plain-text extraction at `POST /v1/ocr`.
 - Old OCR AI service docs have been moved to `docs/archive/jetson_ocr_ai/`.
 - Initial `fact-check-service` scaffold and knowledge DB folders have been added.
 - Active model config now keeps OCR detection/recognition, LLM, and embedding paths only.
+- `web-app` now presents the F1 Fact Checker product flow instead of the old OCR assistant UI.
+- `web-app` supports text, URL, and image input modes and submits normal checks through `fact-check-service`.
+- Fact-check sessions now persist run metadata, overall verdicts, claim verdicts, evidence JSON, and result JSON artifacts.
+- Recent sessions are filtered to fact-check runs; legacy public OCR/chat endpoints are disabled with HTTP 410 responses.
+
+Latest web-app verification:
+
+- `rtk pytest -q` -> 26 passed.
+- `rtk proxy pytest -q tests/test_web_app_fact_check.py` -> 4 passed.
+- Tester subagent completed an independent web-app acceptance pass.
 
 See `docs/RESTRUCTURING_PROGRESS.md` for the latest restructuring notes.
 

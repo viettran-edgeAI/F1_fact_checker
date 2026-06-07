@@ -5,7 +5,8 @@ from fastapi import FastAPI
 from .config import FactCheckConfig
 from .knowledge.retrieval import search_facts
 from .knowledge.sqlite_store import connect, initialize_schema, status
-from .schemas import FactSearchRequest, FactSearchResponse
+from .orchestrator import FactCheckOrchestrator
+from .schemas import FactSearchRequest, FactSearchResponse, FinalCheckResponse, TextCheckRequest
 
 
 app = FastAPI(title="F1 Fact Check Service", version="0.1.0")
@@ -33,6 +34,12 @@ def knowledge_search(request: FactSearchRequest) -> FactSearchResponse:
         initialize_schema(conn)
         facts = search_facts(conn, request.query, limit=request.limit)
     return FactSearchResponse(query=request.query, facts=facts)
+
+
+@app.post("/v1/check/text", response_model=FinalCheckResponse)
+def check_text(request: TextCheckRequest) -> FinalCheckResponse:
+    orchestrator = FactCheckOrchestrator.from_env()
+    return orchestrator.check_text(request)
 
 
 def main() -> None:

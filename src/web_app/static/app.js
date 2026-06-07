@@ -1,61 +1,46 @@
 const state = {
+  mode: "text",
   activeSessionId: null,
-  activeMode: null,
-  translateLanguage: "Vietnamese",
-  thinkingMode: "fast",
-  isBusy: false,
   pendingFile: null,
   pendingPreviewUrl: null,
-  currentMessages: [],
-  currentMarkdown: "",
-  hasDocument: false,
-  selectionMode: false,
+  isBusy: false,
   selectedSessionIds: new Set(),
   recentSessionIds: [],
   showAllSessions: false,
   account: null,
   accountDetails: null,
-  rateLimit: null,
   authMode: "login",
   signupPendingId: null,
 };
 
-let copyFeedbackTimer = null;
-let mathRenderFrame = 0;
-
 const els = {
+  modeTabs: document.querySelectorAll(".mode-tab"),
+  textMode: document.querySelector("#textMode"),
+  urlMode: document.querySelector("#urlMode"),
+  imageMode: document.querySelector("#imageMode"),
+  textInput: document.querySelector("#textInput"),
+  urlInput: document.querySelector("#urlInput"),
   dropZone: document.querySelector("#dropZone"),
   fileInput: document.querySelector("#fileInput"),
   uploadButton: document.querySelector("#uploadButton"),
-  convertButton: document.querySelector("#convertButton"),
-  startAgainButton: document.querySelector("#startAgainButton"),
   selectedFilePreview: document.querySelector("#selectedFilePreview"),
-  uploadState: document.querySelector("#uploadState"),
-  uploadLimitStatus: document.querySelector("#uploadLimitStatus"),
   dropTitle: document.querySelector("#dropTitle"),
-  outputCard: document.querySelector("#outputCard"),
+  checkButton: document.querySelector("#checkButton"),
+  clearButton: document.querySelector("#clearButton"),
+  uploadLimitStatus: document.querySelector("#uploadLimitStatus"),
+  uploadState: document.querySelector("#uploadState"),
+  progressList: document.querySelector("#progressList"),
   emptyOutput: document.querySelector("#emptyOutput"),
-  ocrPanel: document.querySelector("#ocrPanel"),
-  ocrResult: document.querySelector("#ocrResult"),
-  copyOcrButton: document.querySelector("#copyOcrButton"),
-  copyOcrStatus: document.querySelector("#copyOcrStatus"),
-  answerResult: document.querySelector("#answerResult"),
-  promptForm: document.querySelector("#promptForm"),
-  thinkingModeWrap: document.querySelector("#thinkingModeWrap"),
-  thinkingModeButton: document.querySelector("#thinkingModeButton"),
-  thinkingModeLabel: document.querySelector("#thinkingModeLabel"),
-  thinkingModeMenu: document.querySelector("#thinkingModeMenu"),
-  translateLanguageButton: document.querySelector("#translateLanguageButton"),
-  translateLanguageLabel: document.querySelector("#translateLanguageLabel"),
-  translateLanguageMenu: document.querySelector("#translateLanguageMenu"),
-  translateQuickAction: document.querySelector("#translateQuickAction"),
-  promptInput: document.querySelector("#promptInput"),
-  sendButton: document.querySelector("#sendButton"),
+  resultShell: document.querySelector("#resultShell"),
+  overallVerdict: document.querySelector("#overallVerdict"),
+  claimsList: document.querySelector("#claimsList"),
+  claimVerdicts: document.querySelector("#claimVerdicts"),
+  summaryText: document.querySelector("#summaryText"),
+  debugPayload: document.querySelector("#debugPayload"),
   sessionList: document.querySelector("#sessionList"),
   themeToggle: document.querySelector("#themeToggle"),
   accountStatus: document.querySelector("#accountStatus"),
   accountName: document.querySelector("#accountName"),
-  pricingButton: document.querySelector("#pricingButton"),
   loginButton: document.querySelector("#loginButton"),
   signupButton: document.querySelector("#signupButton"),
   logoutButton: document.querySelector("#logoutButton"),
@@ -70,11 +55,9 @@ const els = {
   authForm: document.querySelector("#authForm"),
   authTitle: document.querySelector("#authTitle"),
   authCredentialsFields: document.querySelector("#authCredentialsFields"),
-  authUsernameWrap: document.querySelector("#authUsernameWrap"),
   authUsername: document.querySelector("#authUsername"),
   authEmail: document.querySelector("#authEmail"),
   authPassword: document.querySelector("#authPassword"),
-  authPasswordConfirmWrap: document.querySelector("#authPasswordConfirmWrap"),
   authPasswordConfirm: document.querySelector("#authPasswordConfirm"),
   authWebsite: document.querySelector("#authWebsite"),
   emailVerificationFields: document.querySelector("#emailVerificationFields"),
@@ -96,59 +79,30 @@ const els = {
   helpCloseButton: document.querySelector("#helpCloseButton"),
 };
 
-const iconFile = `
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M7 3.5h7l4 4v13H7z"></path>
-    <path d="M14 3.7v4.1h4"></path>
-    <path d="M10 12h5M10 15.5h5"></path>
-  </svg>
-`;
-
-const iconMore = `
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 6h.01M12 12h.01M12 18h.01"></path>
-  </svg>
-`;
-
 document.addEventListener("DOMContentLoaded", async () => {
-  ensureDynamicChatStyles();
   bindEvents();
-  hideOcrContent();
   await loadAccountState();
-  loadRecentSessions();
-  queueMathRender(document.body);
+  await loadRecentSessions();
 });
 
 function bindEvents() {
-  on(els.uploadButton, "click", () => els.fileInput?.click());
-  on(els.convertButton, "click", convertSelectedFile);
-  on(els.startAgainButton, "click", () => {
-    if (state.isBusy) return;
-    clearSelectedFile();
-    setStatus("Ready for a new upload.");
+  els.modeTabs.forEach((button) => {
+    button.addEventListener("click", () => setMode(button.dataset.mode));
   });
-  on(els.copyOcrButton, "click", copyCurrentOcr);
+  on(els.checkButton, "click", submitCheck);
+  on(els.clearButton, "click", clearInput);
+  on(els.uploadButton, "click", () => els.fileInput.click());
   on(els.fileInput, "change", () => {
     const file = els.fileInput.files?.[0];
     if (file) attachFile(file);
     els.fileInput.value = "";
   });
-
   on(els.dropZone, "click", (event) => {
-    if (event.target.closest("button")) return;
-    if (!canAttachDocument()) {
-      setStatus("Click Start again or remove the current file to load a new one.");
-      return;
-    }
-    els.fileInput.click();
+    if (!event.target.closest("button")) els.fileInput.click();
   });
   on(els.dropZone, "keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      if (!canAttachDocument()) {
-        setStatus("Click Start again or remove the current file to load a new one.");
-        return;
-      }
       els.fileInput.click();
     }
   });
@@ -156,371 +110,206 @@ function bindEvents() {
     event.preventDefault();
     els.dropZone.classList.add("is-dragging");
   });
-  on(els.dropZone, "dragleave", () => {
-    els.dropZone.classList.remove("is-dragging");
-  });
+  on(els.dropZone, "dragleave", () => els.dropZone.classList.remove("is-dragging"));
   on(els.dropZone, "drop", (event) => {
     event.preventDefault();
     els.dropZone.classList.remove("is-dragging");
-    if (!canAttachDocument()) {
-      setStatus("Click Start again or remove the current file to load a new one.");
-      return;
-    }
     const file = event.dataTransfer?.files?.[0];
     if (file) attachFile(file);
   });
-
   document.addEventListener("paste", (event) => {
-    const file = [...(event.clipboardData?.files || [])].find((item) =>
-      item.type.startsWith("image/")
-    );
-    if (file) {
-      event.preventDefault();
-      if (!canAttachDocument()) {
-        setStatus("Click Start again or remove the current file to load a new one.");
-        return;
-      }
-      const pasted = new File([file], "pasted-image.png", { type: file.type || "image/png" });
-      attachFile(pasted);
-    }
-  });
-
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest(".session-menu-wrap")) {
-      closeSessionMenus();
-    }
-    if (!event.target.closest(".thinking-mode-wrap")) {
-      closeThinkingModeMenu();
-    }
-    if (!event.target.closest(".quick-action-language")) {
-      closeTranslateLanguageMenu();
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeThinkingModeMenu();
-      closeTranslateLanguageMenu();
-    }
-  });
-
-  on(els.promptForm, "submit", (event) => {
+    if (state.mode !== "image") return;
+    const file = [...(event.clipboardData?.files || [])].find((item) => item.type.startsWith("image/"));
+    if (!file) return;
     event.preventDefault();
-    askQuestion();
+    attachFile(new File([file], "pasted-f1-news.png", { type: file.type || "image/png" }));
   });
-  on(els.thinkingModeButton, "click", (event) => {
-    event.stopPropagation();
-    toggleThinkingModeMenu();
-  });
-  els.thinkingModeMenu?.querySelectorAll("[data-thinking-mode]").forEach((button) => {
-    on(button, "click", () => {
-      const mode = button.dataset.thinkingMode;
-      if (mode === "fast" || mode === "thinking") {
-        setThinkingMode(mode);
-      }
-      closeThinkingModeMenu();
-    });
-  });
-
-  document.querySelectorAll(".quick-actions [data-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      submitQuickAction(button.dataset.mode);
-    });
-  });
-  on(els.translateLanguageButton, "click", (event) => {
-    event.stopPropagation();
-    toggleTranslateLanguageMenu();
-  });
-  els.translateLanguageMenu?.querySelectorAll("[data-translate-language]").forEach((button) => {
-    on(button, "click", () => {
-      const language = String(button.dataset.translateLanguage || "").trim();
-      if (language) {
-        setTranslateLanguage(language);
-      }
-      closeTranslateLanguageMenu();
-    });
-  });
-
-  on(els.themeToggle, "click", () => {
-    document.body.classList.toggle("dark");
-  });
+  on(els.themeToggle, "click", () => document.body.classList.toggle("dark"));
   on(els.accountStatus, "click", openAccountModal);
-  on(els.pricingButton, "click", () => setStatus("Pricing is not configured."));
-  on(els.loginButton, "click", () => {
-    openAuthModal("login").catch((error) => setStatus(error.message, "error"));
-  });
-  on(els.signupButton, "click", () => {
-    openAuthModal("signup").catch((error) => setStatus(error.message, "error"));
-  });
+  on(els.loginButton, "click", () => openAuthModal("login").catch((error) => setStatus(error.message, "error")));
+  on(els.signupButton, "click", () => openAuthModal("signup").catch((error) => setStatus(error.message, "error")));
   on(els.logoutButton, "click", logout);
-  on(els.helpButton, "click", openHelpModal);
+  on(els.helpButton, "click", () => { els.helpModal.hidden = false; });
+  on(els.helpCloseButton, "click", () => { els.helpModal.hidden = true; });
+  on(els.authCloseButton, "click", () => { els.authModal.hidden = true; });
+  on(els.authForm, "submit", submitAuthForm);
+  on(els.accountCloseButton, "click", () => { els.accountModal.hidden = true; });
+  on(els.accountUpgradeButton, "click", () => setAccountStatus("Account upgrades are not configured yet."));
+  on(els.accountDeleteButton, "click", () => setAccountStatus("Account deletion is not configured yet."));
   on(els.selectSessionsButton, "click", enterSelectionMode);
   on(els.selectAllSessionsButton, "click", toggleSelectAllSessions);
   on(els.cancelSelectionButton, "click", exitSelectionMode);
   on(els.deleteSelectedButton, "click", deleteSelectedSessions);
-
   on(els.viewAllButton, "click", () => {
     state.showAllSessions = true;
     loadRecentSessions();
   });
-  on(els.authCloseButton, "click", closeAuthModal);
-  on(els.authForm, "submit", submitAuthForm);
-  on(els.accountCloseButton, "click", closeAccountModal);
-  on(els.accountUpgradeButton, "click", () => setAccountStatus("Account upgrades are not configured yet."));
-  on(els.accountDeleteButton, "click", () => setAccountStatus("Account deletion is not configured yet."));
-  on(els.helpCloseButton, "click", closeHelpModal);
-
-  setThinkingMode(state.thinkingMode);
-  setTranslateLanguage(state.translateLanguage);
 }
 
-function attachFile(file) {
-  if (state.isBusy) return;
-  if (!canAttachDocument()) {
-    setStatus("Click Start again or remove the current file to load a new one.");
-    return;
-  }
-  const validation = validateFile(file);
-  if (validation) {
-    setStatus(validation, "error");
-    return;
-  }
-
-  const attachToCurrentSession = Boolean(state.activeSessionId && !state.hasDocument);
-  clearSelectedFile({
-    keepSession: attachToCurrentSession,
-    keepOutput: attachToCurrentSession,
+function setMode(mode) {
+  if (!["text", "url", "image"].includes(mode) || state.isBusy) return;
+  state.mode = mode;
+  els.modeTabs.forEach((button) => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
   });
-  state.pendingFile = file;
-  if (file.type.startsWith("image/")) {
-    state.pendingPreviewUrl = URL.createObjectURL(file);
-  }
-  renderSelectedFile({
-    filename: file.name,
-    contentType: file.type,
-    previewUrl: state.pendingPreviewUrl,
-    removable: true,
-  });
-  uploadFile(file);
-}
-
-function clearSelectedFile(options = {}) {
-  if (state.pendingPreviewUrl) {
-    URL.revokeObjectURL(state.pendingPreviewUrl);
-  }
-  state.pendingFile = null;
-  state.pendingPreviewUrl = null;
-  if (!options.keepSession) {
-    state.activeSessionId = null;
-    state.currentMessages = [];
-    state.currentMarkdown = "";
-    state.hasDocument = false;
-  }
-  if (!options.keepOutput) {
-    clearOutput();
-  }
-  state.activeMode = null;
-  state.translateLanguage = "Vietnamese";
-  els.promptInput.value = "";
-  setQuickActionActive(null);
-  setTranslateLanguage(state.translateLanguage);
-  clearCopyFeedback();
-  els.selectedFilePreview.hidden = true;
-  els.selectedFilePreview.innerHTML = "";
-  els.convertButton.hidden = true;
-  if (els.startAgainButton) {
-    els.startAgainButton.hidden = true;
-  }
-  els.uploadButton.hidden = false;
-  els.dropTitle.textContent = "Attach a document anytime";
+  els.textMode.hidden = mode !== "text";
+  els.urlMode.hidden = mode !== "url";
+  els.imageMode.hidden = mode !== "image";
   setStatus("");
 }
 
-function renderSelectedFile({ filename, contentType, previewUrl, removable }) {
-  const isImage = String(contentType || "").startsWith("image/");
-  const media = isImage && previewUrl
-    ? `<img src="${previewUrl}" alt="" />`
-    : iconFile;
-  els.selectedFilePreview.innerHTML = `
-    <div class="selected-thumb">${media}</div>
-    <div class="selected-meta">
-      <strong>${escapeHtml(filename)}</strong>
-      <span>${escapeHtml(fileTypeLabel(filename, contentType))}</span>
-    </div>
-    ${removable ? `<button class="remove-file" type="button" aria-label="Remove selected file" title="Remove selected file">&times;</button>` : ""}
-  `;
-  els.selectedFilePreview.hidden = false;
-  els.uploadButton.hidden = true;
-  els.convertButton.hidden = true;
-  if (els.startAgainButton) {
-    els.startAgainButton.hidden = false;
-  }
-  els.dropTitle.textContent = filename;
-  const remove = els.selectedFilePreview.querySelector(".remove-file");
-  if (remove) {
-    remove.addEventListener("click", (event) => {
-      event.stopPropagation();
-      clearSelectedFile();
-    });
-  }
-}
-
-async function convertSelectedFile() {
-  if (!state.pendingFile || state.isBusy) return;
-  await uploadFile(state.pendingFile);
-}
-
-async function uploadFile(file) {
-  const attachToCurrentSession = Boolean(state.activeSessionId && !state.hasDocument);
-  state.isBusy = true;
-  setControlsBusy(true);
-  setStatus(`Running OCR for ${file.name}...`);
-  if (!attachToCurrentSession) {
-    clearOutput();
-  }
-
-  const body = new FormData();
-  body.append("file", file);
-  const uploadUrl = attachToCurrentSession
-    ? `/sessions/upload?session_id=${encodeURIComponent(state.activeSessionId)}`
-    : "/sessions/upload";
-
-  try {
-    const response = await fetch(uploadUrl, { method: "POST", body });
-    const data = await readJsonResponse(response);
-    state.activeSessionId = data.id;
-    state.pendingFile = null;
-    if (state.pendingPreviewUrl) {
-      URL.revokeObjectURL(state.pendingPreviewUrl);
-      state.pendingPreviewUrl = null;
-    }
-    renderSession(data);
-    const elapsedText = formatElapsedSeconds(data.ocr_elapsed_ms);
-    const completeText = elapsedText ? `OCR complete in ${elapsedText}.` : "OCR complete.";
-    setStatus(completeText, "success");
-    if (data.rate_limit) {
-      renderRateLimit(data.rate_limit);
-    }
-    await loadRecentSessions();
-  } catch (error) {
-    setStatus(error.message, "error");
-  } finally {
-    state.isBusy = false;
-    setControlsBusy(false);
-  }
-}
-
-async function submitQuickAction(mode) {
-  if (state.isBusy) return;
-  const resolvedMode = normalizeQuickActionMode(mode);
-  state.activeMode = resolvedMode;
-  setQuickActionActive(resolvedMode);
-  const prompt = els.promptInput.value.trim() || quickActionPrompt(resolvedMode);
-  await askQuestion({ prompt, mode: resolvedMode });
-}
-
-async function askQuestion(options = {}) {
-  const prompt = (options.prompt || els.promptInput.value).trim();
-  const mode = options.mode ?? state.activeMode;
-  const allowEmptyPrompt = !prompt && state.hasDocument && !state.currentMessages.length;
-  if (!prompt && !allowEmptyPrompt) {
-    els.promptInput.focus();
+function attachFile(file) {
+  const error = validateImage(file);
+  if (error) {
+    setStatus(error, "error");
     return;
   }
+  clearPendingFile();
+  state.pendingFile = file;
+  state.pendingPreviewUrl = URL.createObjectURL(file);
+  els.selectedFilePreview.innerHTML = `
+    <div class="selected-thumb"><img src="${state.pendingPreviewUrl}" alt="" /></div>
+    <div class="selected-meta">
+      <strong>${escapeHtml(file.name)}</strong>
+      <span>${escapeHtml(file.type || "image")}</span>
+    </div>
+    <button class="remove-file" type="button" aria-label="Remove selected image" title="Remove selected image">&times;</button>
+  `;
+  els.selectedFilePreview.hidden = false;
+  els.dropTitle.textContent = file.name;
+  els.selectedFilePreview.querySelector(".remove-file").addEventListener("click", (event) => {
+    event.stopPropagation();
+    clearPendingFile();
+  });
+}
 
+async function submitCheck() {
+  if (state.isBusy) return;
   state.isBusy = true;
   setControlsBusy(true);
+  setProgress("preprocessing");
+  setStatus("Preparing input...");
+  clearResult();
 
   try {
-    await ensureChatSession();
-    const userMessage = prompt ? [{ role: "user", content: prompt }] : [];
-    const useThinkingTrace = state.thinkingMode === "thinking";
-    const optimisticMessages = [
-      ...state.currentMessages,
-      ...userMessage,
-      {
-        role: "assistant",
-        content: "",
-        answer_complete: false,
-        thinking_trace: useThinkingTrace ? "" : undefined,
-        thinking_in_progress: useThinkingTrace,
-        thinking_open: false,
-      },
-    ];
-    const assistantIndex = optimisticMessages.length - 1;
-    let finalSession = null;
-    els.emptyOutput.hidden = true;
-    renderMessages(optimisticMessages);
-    const streamUpdater = createStreamingMessageUpdater(optimisticMessages, assistantIndex);
-
-    await streamAskResponse({
-      sessionId: state.activeSessionId,
-      payload: {
-        prompt,
-        mode,
-        thinking_mode: state.thinkingMode,
-      },
-      onToken(delta, kind) {
-        const tokenKind = kind || (useThinkingTrace ? "reasoning" : "answer");
-        if (tokenKind === "reasoning") {
-          if (!useThinkingTrace) {
-            return;
-          }
-          optimisticMessages[assistantIndex].thinking_trace += delta;
-        } else {
-          optimisticMessages[assistantIndex].content += delta;
-        }
-        streamUpdater.queue(tokenKind);
-      },
-      onDone(data) {
-        const answerText = String(data?.answer || "").trim();
-        const reasoningText = String(data?.reasoning_text || optimisticMessages[assistantIndex].thinking_trace || "").trim();
-        optimisticMessages[assistantIndex].thinking_in_progress = false;
-        if (useThinkingTrace && reasoningText) {
-          optimisticMessages[assistantIndex].thinking_trace = reasoningText;
-        }
-        if (answerText) {
-          optimisticMessages[assistantIndex].content = answerText;
-        }
-        optimisticMessages[assistantIndex].answer_complete = true;
-        optimisticMessages[assistantIndex].elapsed_ms = toFiniteNumberOrUndefined(data?.elapsed_ms);
-        optimisticMessages[assistantIndex].prompt_tokens = toFiniteNumberOrUndefined(data?.prompt_tokens);
-        optimisticMessages[assistantIndex].completion_tokens = toFiniteNumberOrUndefined(data?.completion_tokens);
-        optimisticMessages[assistantIndex].total_tokens = toFiniteNumberOrUndefined(data?.total_tokens);
-        if (data?.session && typeof data.session === "object") {
-          finalSession = data.session;
-        }
-        streamUpdater.flush();
-        renderMessages(optimisticMessages);
-      },
-    });
-
-    const finalThinkingTrace = useThinkingTrace
-      ? String(optimisticMessages[assistantIndex].thinking_trace || "").trim()
-      : "";
-    if (finalSession) {
-      decorateSessionWithThinkingTrace(finalSession, finalThinkingTrace);
-      renderSession(finalSession);
-    } else {
-      const response = await fetch(`/sessions/${state.activeSessionId}`);
-      const data = await readJsonResponse(response);
-      decorateSessionWithThinkingTrace(data, finalThinkingTrace);
-      renderSession(data);
-    }
-    els.promptInput.value = "";
-    state.activeMode = null;
-    setQuickActionActive(null);
+    const response = await postCurrentInput();
+    const session = await readJsonResponse(response);
+    state.activeSessionId = session.id;
+    renderSession(session);
+    renderRateLimit(session.rate_limit);
+    setStatus("Fact-check complete.", "success");
     await loadRecentSessions();
   } catch (error) {
-    renderMessages([
-      ...state.currentMessages,
-      ...(prompt ? [{ role: "user", content: prompt }] : []),
-      { role: "assistant", content: error.message, error: true },
-    ]);
     setStatus(error.message, "error");
+    els.progressList.hidden = true;
+    els.emptyOutput.hidden = false;
   } finally {
     state.isBusy = false;
     setControlsBusy(false);
   }
+}
+
+async function postCurrentInput() {
+  if (state.mode === "text") {
+    const text = els.textInput.value.trim();
+    if (!text) {
+      els.textInput.focus();
+      throw new Error("Text input cannot be empty.");
+    }
+    setProgress("extracting_claims");
+    return fetch("/sessions/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_type: "text", text, session_id: state.activeSessionId }),
+    });
+  }
+  if (state.mode === "url") {
+    const url = els.urlInput.value.trim();
+    if (!url) {
+      els.urlInput.focus();
+      throw new Error("URL input cannot be empty.");
+    }
+    setProgress("retrieving_evidence");
+    return fetch("/sessions/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_type: "url", url, session_id: state.activeSessionId }),
+    });
+  }
+  if (!state.pendingFile) {
+    throw new Error("Choose or paste a screenshot first.");
+  }
+  setProgress("extracting_claims");
+  const body = new FormData();
+  body.append("image", state.pendingFile);
+  const query = state.activeSessionId ? `?session_id=${encodeURIComponent(state.activeSessionId)}` : "";
+  return fetch(`/sessions/check-image${query}`, { method: "POST", body });
+}
+
+function renderSession(session) {
+  const result = session.fact_check_result;
+  if (!result) {
+    clearResult();
+    return;
+  }
+  els.emptyOutput.hidden = true;
+  els.progressList.hidden = true;
+  els.resultShell.hidden = false;
+  const verdict = String(result.verdict || "NOT_ENOUGH_INFO");
+  els.overallVerdict.textContent = verdict;
+  els.overallVerdict.className = `verdict-pill verdict-${verdict.toLowerCase()}`;
+  const claims = Array.isArray(result.claims) ? result.claims : [];
+  els.claimsList.innerHTML = claims.length
+    ? claims.map((item, index) => renderClaimSummary(item, index)).join("")
+    : `<div class="empty-list">No checkable claims were extracted.</div>`;
+  els.claimVerdicts.innerHTML = claims.length
+    ? claims.map(renderClaimVerdict).join("")
+    : `<div class="empty-list">No claim verdicts available.</div>`;
+  els.summaryText.textContent = result.summary || "No final explanation was returned.";
+  els.debugPayload.textContent = JSON.stringify(debugPayload(result), null, 2);
+}
+
+function renderClaimSummary(item, index) {
+  const claim = item.claim || {};
+  return `
+    <div class="claim-row">
+      <span>${escapeHtml(claim.claim_id || `c${String(index + 1).padStart(3, "0")}`)}</span>
+      <p>${escapeHtml(claim.text || "")}</p>
+    </div>
+  `;
+}
+
+function renderClaimVerdict(item) {
+  const claim = item.claim || {};
+  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+  return `
+    <article class="claim-card">
+      <div class="claim-card-head">
+        <strong>${escapeHtml(claim.text || "Claim")}</strong>
+        <span class="mini-verdict">${escapeHtml(item.verdict || "NOT_ENOUGH_INFO")}</span>
+      </div>
+      <dl>
+        <div><dt>Type</dt><dd>${escapeHtml(claim.claim_type || claim.verification_stream || "unknown")}</dd></div>
+        <div><dt>Confidence</dt><dd>${formatConfidence(item.confidence)}</dd></div>
+        <div><dt>Evidence</dt><dd>${escapeHtml(evidenceSummary(evidence))}</dd></div>
+      </dl>
+      <p>${escapeHtml(item.rationale || "No claim explanation was returned.")}</p>
+    </article>
+  `;
+}
+
+function debugPayload(result) {
+  return {
+    cleaned_input_text: result.text || "",
+    ocr_extracted_text: result.meta?.ocr_text || null,
+    url_metadata: result.meta?.url_metadata || null,
+    retrieved_evidence: (result.claims || []).map((item) => ({
+      claim_id: item.claim?.claim_id,
+      evidence: item.evidence || [],
+    })),
+  };
 }
 
 async function loadRecentSessions() {
@@ -534,28 +323,147 @@ async function loadRecentSessions() {
   }
 }
 
-async function loadAccountState() {
+function renderRecentSessions(sessions) {
+  state.recentSessionIds = sessions.map((session) => session.id);
+  if (!sessions.length) {
+    els.sessionList.innerHTML = `<div class="empty-list">No fact-check runs yet.</div>`;
+    updateSelectionControls();
+    return;
+  }
+  els.sessionList.innerHTML = sessions.map(renderSessionItem).join("");
+  els.sessionList.querySelectorAll("[data-session-id]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      if (event.target.closest("button") || event.target.closest("input")) return;
+      const sessionId = item.dataset.sessionId;
+      if (item.classList.contains("selection-mode")) {
+        toggleSessionSelected(sessionId);
+      } else {
+        openSession(sessionId);
+      }
+    });
+  });
+  els.sessionList.querySelectorAll("[data-delete-session]").forEach((button) => {
+    button.addEventListener("click", () => deleteSession(button.dataset.deleteSession));
+  });
+  els.sessionList.querySelectorAll("[data-select-session]").forEach((input) => {
+    input.addEventListener("change", () => toggleSessionSelected(input.dataset.selectSession));
+  });
+  updateSelectionControls();
+}
+
+function renderSessionItem(session) {
+  const selected = state.selectedSessionIds.has(session.id);
+  const selectionClass = state.selectedSessionIds.size || !els.cancelSelectionButton.hidden ? " selection-mode" : "";
+  return `
+    <article class="session-item${selectionClass}" data-session-id="${escapeHtml(session.id)}">
+      <input class="session-check" type="checkbox" data-select-session="${escapeHtml(session.id)}" ${selected ? "checked" : ""} ${els.cancelSelectionButton.hidden ? "hidden" : ""} />
+      <div class="session-main">
+        <div class="session-title-row">
+          <strong>${escapeHtml(session.filename || "F1 fact-check")}</strong>
+          <span class="mini-verdict">${escapeHtml(session.overall_verdict || session.status || "pending")}</span>
+        </div>
+        <p>${escapeHtml(session.input_preview || "")}</p>
+        <span>${escapeHtml(session.input_type || "check")} · ${formatDate(session.updated_at)}</span>
+      </div>
+      <button class="icon-button session-delete" type="button" data-delete-session="${escapeHtml(session.id)}" aria-label="Delete session" title="Delete">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12" /><path d="M10 11v6M14 11v6" /><path d="M9 7l1-2h4l1 2" /><path d="M8 7l1 14h6l1-14" /></svg>
+      </button>
+    </article>
+  `;
+}
+
+async function openSession(sessionId) {
   try {
-    const response = await fetch("/auth/me");
+    const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
     const data = await readJsonResponse(response);
-    state.account = data.identity;
-    state.accountDetails = null;
-    state.rateLimit = data.rate_limit || null;
-    renderAccountState(data.identity);
-    renderRateLimit(data.rate_limit);
+    state.activeSessionId = data.id;
+    renderSession(data);
+    setStatus("Loaded fact-check run.");
   } catch (error) {
     setStatus(error.message, "error");
   }
 }
 
-async function ensureChatSession() {
-  if (state.activeSessionId) return state.activeSessionId;
+async function deleteSession(sessionId) {
+  try {
+    const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    await readJsonResponse(response);
+    if (state.activeSessionId === sessionId) {
+      state.activeSessionId = null;
+      clearResult();
+    }
+    state.selectedSessionIds.delete(sessionId);
+    await loadRecentSessions();
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
 
-  const response = await fetch("/sessions/chat", { method: "POST" });
-  const data = await readJsonResponse(response);
-  renderSession(data);
-  await loadRecentSessions();
-  return data.id;
+function enterSelectionMode() {
+  els.cancelSelectionButton.hidden = false;
+  els.selectAllSessionsButton.hidden = false;
+  els.deleteSelectedButton.hidden = false;
+  els.selectionSummary.hidden = false;
+  els.selectSessionsButton.hidden = true;
+  renderRecentSessionsFromDom();
+}
+
+function exitSelectionMode() {
+  state.selectedSessionIds.clear();
+  els.cancelSelectionButton.hidden = true;
+  els.selectAllSessionsButton.hidden = true;
+  els.deleteSelectedButton.hidden = true;
+  els.selectionSummary.hidden = true;
+  els.selectSessionsButton.hidden = false;
+  loadRecentSessions();
+}
+
+function toggleSelectAllSessions() {
+  const allSelected = state.recentSessionIds.every((id) => state.selectedSessionIds.has(id));
+  state.selectedSessionIds = allSelected ? new Set() : new Set(state.recentSessionIds);
+  renderRecentSessionsFromDom();
+}
+
+function toggleSessionSelected(sessionId) {
+  if (state.selectedSessionIds.has(sessionId)) state.selectedSessionIds.delete(sessionId);
+  else state.selectedSessionIds.add(sessionId);
+  renderRecentSessionsFromDom();
+}
+
+async function deleteSelectedSessions() {
+  const sessionIds = [...state.selectedSessionIds];
+  if (!sessionIds.length) return;
+  try {
+    const response = await fetch("/sessions/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_ids: sessionIds }),
+    });
+    await readJsonResponse(response);
+    if (sessionIds.includes(state.activeSessionId)) {
+      state.activeSessionId = null;
+      clearResult();
+    }
+    exitSelectionMode();
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function renderRecentSessionsFromDom() {
+  loadRecentSessions();
+}
+
+async function loadAccountState() {
+  try {
+    const response = await fetch("/auth/me");
+    const data = await readJsonResponse(response);
+    state.account = data.identity;
+    renderAccountState(data.identity);
+    renderRateLimit(data.rate_limit);
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
 }
 
 async function openAuthModal(mode) {
@@ -564,41 +472,24 @@ async function openAuthModal(mode) {
   els.authTitle.textContent = mode === "signup" ? "Sign up" : "Log in";
   els.authSubmitButton.textContent = mode === "signup" ? "Sign up" : "Log in";
   els.authStatus.textContent = "";
-  els.authStatus.className = "state-text";
   els.authUsername.value = "";
   els.authEmail.value = "";
   els.authPassword.value = "";
-  if (els.authPasswordConfirm) {
-    els.authPasswordConfirm.value = "";
-  }
+  els.authPasswordConfirm.value = "";
   els.authWebsite.value = "";
   els.emailVerificationCode.value = "";
-  renderAuthStage(mode === "signup" ? "signup" : "login");
+  renderAuthStage(mode);
   els.authModal.hidden = false;
-  if (mode === "signup") {
-    els.authUsername.focus();
-  } else {
-    els.authEmail.focus();
-  }
-}
-
-function closeAuthModal() {
-  els.authModal.hidden = true;
 }
 
 async function submitAuthForm(event) {
   event.preventDefault();
   els.authSubmitButton.disabled = true;
-  els.authStatus.textContent = authBusyText();
-  els.authStatus.className = "state-text";
+  els.authStatus.textContent = "Working...";
   try {
-    if (state.authMode === "signup") {
-      await startSignup();
-    } else if (state.authMode === "signup-verify") {
-      await verifySignupEmail();
-    } else {
-      await startLogin();
-    }
+    if (state.authMode === "signup") await startSignup();
+    else if (state.authMode === "signup-verify") await verifySignupEmail();
+    else await startLogin();
   } catch (error) {
     els.authStatus.textContent = error.message;
     els.authStatus.className = "state-text error";
@@ -609,1481 +500,212 @@ async function submitAuthForm(event) {
 
 function renderAuthStage(stage) {
   state.authMode = stage;
-  const isSignupStart = stage === "signup";
-  els.authCredentialsFields.hidden = !(stage === "signup" || stage === "login");
+  const signup = stage === "signup";
+  els.authCredentialsFields.hidden = stage === "signup-verify";
   els.emailVerificationFields.hidden = stage !== "signup-verify";
-  document.querySelectorAll(".signup-only").forEach((node) => {
-    node.hidden = !isSignupStart;
-  });
-  if (els.authPassword) {
-    els.authPassword.autocomplete = isSignupStart ? "new-password" : "current-password";
-  }
-  const titles = {
-    signup: "Sign up",
-    "signup-verify": "Verify email",
-    login: "Log in",
-  };
-  const buttons = {
-    signup: "Send verification code",
-    "signup-verify": "Verify email",
-    login: "Log in",
-  };
-  els.authTitle.textContent = titles[stage] || "Log in";
-  els.authSubmitButton.textContent = buttons[stage] || "Continue";
-}
-
-function authBusyText() {
-  return {
-    signup: "Creating signup session...",
-    "signup-verify": "Verifying email...",
-    login: "Checking credentials...",
-  }[state.authMode] || "Working...";
+  document.querySelectorAll(".signup-only").forEach((node) => { node.hidden = !signup; });
 }
 
 async function startSignup() {
-  if (els.authPassword.value !== (els.authPasswordConfirm?.value || "")) {
-    throw new Error("Passwords do not match.");
-  }
-  const payload = {
-    username: els.authUsername.value.trim(),
-    email: els.authEmail.value.trim(),
-    password: els.authPassword.value,
-    website: els.authWebsite.value,
-  };
+  const password = els.authPassword.value;
+  if (password !== els.authPasswordConfirm.value) throw new Error("Passwords do not match.");
   const response = await fetch("/auth/signup/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      email: els.authEmail.value,
+      username: els.authUsername.value,
+      password,
+      website: els.authWebsite.value,
+    }),
   });
   const data = await readJsonResponse(response);
   state.signupPendingId = data.pending_id;
   renderAuthStage("signup-verify");
-  els.authStatus.textContent = data.verification_code
-    ? `Verification code: ${data.verification_code}`
-    : "Verification code sent.";
-  els.emailVerificationCode.focus();
+  els.authStatus.textContent = "Verification code sent.";
 }
 
 async function verifySignupEmail() {
   const response = await fetch("/auth/signup/verify-email", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      pending_id: state.signupPendingId,
-      code: els.emailVerificationCode.value.trim(),
-    }),
+    body: JSON.stringify({ pending_id: state.signupPendingId, code: els.emailVerificationCode.value }),
   });
   await readJsonResponse(response);
-  await completeSignup();
-}
-
-async function completeSignup() {
-  const response = await fetch("/auth/signup/complete", {
+  const complete = await fetch("/auth/signup/complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      pending_id: state.signupPendingId,
-    }),
+    body: JSON.stringify({ pending_id: state.signupPendingId }),
   });
-  await readJsonResponse(response);
-  closeAuthModal();
-  clearSelectedFile();
-  await loadAccountState();
+  const data = await readJsonResponse(complete);
+  els.authModal.hidden = true;
+  renderAccountState(data.user);
+  renderRateLimit(data.rate_limit);
   await loadRecentSessions();
-  setStatus("Account created.", "success");
 }
 
 async function startLogin() {
-  const email = els.authEmail.value.trim();
-  const password = els.authPassword.value;
-  if (!email || !password) return;
   const response = await fetch("/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: els.authEmail.value, password: els.authPassword.value }),
   });
-  await readJsonResponse(response);
-  closeAuthModal();
-  clearSelectedFile();
-  await loadAccountState();
+  const data = await readJsonResponse(response);
+  els.authModal.hidden = true;
+  renderAccountState(data.user);
+  renderRateLimit(data.rate_limit);
   await loadRecentSessions();
-  setStatus("Logged in.", "success");
 }
 
 async function logout() {
   try {
-    await fetch("/auth/logout", { method: "POST" });
-    clearSelectedFile();
+    const response = await fetch("/auth/logout", { method: "POST" });
+    await readJsonResponse(response);
     await loadAccountState();
     await loadRecentSessions();
-    setStatus("Logged out.", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }
-}
-
-async function restoreSession(id) {
-  if (state.isBusy) return;
-  try {
-    const response = await fetch(`/sessions/${id}`);
-    const data = await readJsonResponse(response);
-    state.activeSessionId = data.id;
-    state.pendingFile = null;
-    if (state.pendingPreviewUrl) {
-      URL.revokeObjectURL(state.pendingPreviewUrl);
-      state.pendingPreviewUrl = null;
-    }
-    renderSession(data);
-    const label = data.has_document ? data.filename : "chat session";
-    setStatus(`Restored ${label}.`, "success");
-  } catch (error) {
-    setStatus(error.message, "error");
-  }
-}
-
-async function renameSession(id, currentName) {
-  const filename = window.prompt("Rename session", currentName);
-  if (filename === null) return;
-  const cleaned = filename.trim();
-  if (!cleaned) return;
-
-  try {
-    const response = await fetch(`/sessions/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: cleaned }),
-    });
-    const data = await readJsonResponse(response);
-    if (state.activeSessionId === id) {
-      renderSession(data);
-    }
-    await loadRecentSessions();
-  } catch (error) {
-    setStatus(error.message, "error");
-  }
-}
-
-async function deleteSession(id) {
-  if (!window.confirm("Delete this session?")) return;
-  try {
-    const response = await fetch(`/sessions/${id}`, { method: "DELETE" });
-    await readJsonResponse(response);
-    if (state.activeSessionId === id) {
-      clearSelectedFile();
-    }
-    await loadRecentSessions();
-  } catch (error) {
-    setStatus(error.message, "error");
-  }
-}
-
-async function deleteSelectedSessions() {
-  const ids = [...state.selectedSessionIds];
-  if (!ids.length) return;
-  if (!window.confirm(`Delete ${ids.length} selected session${ids.length === 1 ? "" : "s"}?`)) return;
-  try {
-    state.isBusy = true;
-    setControlsBusy(true);
-    const response = await fetch("/sessions/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_ids: ids }),
-    });
-    const data = await readJsonResponse(response);
-    if (ids.includes(state.activeSessionId)) {
-      clearSelectedFile();
-    }
-    exitSelectionMode({ silent: true });
-    await loadRecentSessions();
-    setStatus(`Deleted ${data.deleted_count} session${data.deleted_count === 1 ? "" : "s"}.`, "success");
-  } catch (error) {
-    setStatus(error.message, "error");
-  } finally {
-    state.isBusy = false;
-    setControlsBusy(false);
-  }
-}
-
-function renderSession(session) {
-  state.activeSessionId = session.id;
-  state.currentMessages = session.messages || [];
-  state.currentMarkdown = session.ocr_markdown || "";
-  state.hasDocument = Boolean(session.has_document);
-  if (state.hasDocument) {
-    renderSelectedFile({
-      filename: session.filename,
-      contentType: session.content_type,
-      previewUrl: session.thumbnail_url,
-      removable: true,
-    });
-    els.convertButton.hidden = true;
-    els.uploadButton.hidden = true;
-  } else {
-    renderChatOnlySessionShell();
-  }
-
-  hideOcrContent();
-  clearCopyFeedback();
-
-  renderMessages(state.currentMessages);
-  updateOutputPlaceholderVisibility();
-}
-
-function renderAccountState(identity) {
-  const isAuthenticated = Boolean(identity?.authenticated);
-  const tier = identity?.tier || "guest";
-  const username = identity?.username || (isAuthenticated ? "user" : "Guest");
-  if (els.accountStatus) {
-    els.accountStatus.className = `account-status tier-${tierColorClass(tier)}`;
-    els.accountStatus.disabled = false;
-  }
-  if (els.accountName) {
-    els.accountName.textContent = username;
-  }
-  if (els.loginButton) els.loginButton.hidden = isAuthenticated;
-  if (els.signupButton) els.signupButton.hidden = isAuthenticated;
-  if (els.logoutButton) els.logoutButton.hidden = !isAuthenticated;
-}
-
-function renderRateLimit(rateLimit) {
-  state.rateLimit = rateLimit || null;
-  const text = rateLimitText(rateLimit);
-  setLimitStatus(text);
-  if (!els.accountModal?.hidden) {
-    renderAccountModalBody();
-  }
-}
-
-function rateLimitText(rateLimit) {
-  if (!rateLimit) return "";
-  if (rateLimit.unlimited) {
-    return "OCR uploads: unlimited.";
-  }
-  const remaining = Number(rateLimit.remaining);
-  const limit = Number(rateLimit.limit);
-  if (!Number.isFinite(remaining) || !Number.isFinite(limit)) return "";
-  return `OCR uploads: ${remaining}/${limit} remaining this hour.`;
-}
-
-function tierColorClass(tier) {
-  return {
-    guest: "gray",
-    free: "light-blue",
-    pro: "dark-green",
-    owner: "red",
-  }[tier] || "gray";
-}
-
-function setLimitStatus(message) {
-  if (!els.uploadLimitStatus) return;
-  els.uploadLimitStatus.textContent = message || "";
 }
 
 async function openAccountModal() {
-  setAccountStatus("");
-  if (state.account?.authenticated) {
-    try {
-      const response = await fetch("/account");
-      const data = await readJsonResponse(response);
-      state.accountDetails = data.account || null;
-    } catch (error) {
-      state.accountDetails = null;
-      setAccountStatus(error.message, "error");
-    }
-  } else {
-    state.accountDetails = null;
+  if (!state.account?.authenticated) {
+    await openAuthModal("login");
+    return;
   }
-  renderAccountModalBody();
-  els.accountModal.hidden = false;
+  try {
+    const response = await fetch("/account");
+    const data = await readJsonResponse(response);
+    const account = data.account;
+    els.accountPanelUsername.textContent = account.username || "Account";
+    els.accountEmail.textContent = account.email || "";
+    els.accountTierValue.textContent = account.tier || "";
+    els.accountTierChip.textContent = String(account.tier || "free").toUpperCase();
+    els.accountTierChip.className = `account-chip tier-${account.tier_color || "gray"}`;
+    els.accountUsage.textContent = account.usage?.summary || "";
+    els.accountStatusMessage.textContent = "";
+    els.accountModal.hidden = false;
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
 }
 
-function closeAccountModal() {
-  els.accountModal.hidden = true;
+function renderAccountState(identity) {
+  state.account = identity;
+  els.accountName.textContent = identity?.username || "Guest";
+  els.accountStatus.className = `account-status tier-${identity?.tier_color || "gray"}`;
+  els.loginButton.hidden = Boolean(identity?.authenticated);
+  els.signupButton.hidden = Boolean(identity?.authenticated);
+  els.logoutButton.hidden = !identity?.authenticated;
 }
 
-function openHelpModal() {
-  els.helpModal.hidden = false;
+function renderRateLimit(rateLimit) {
+  if (!rateLimit) return;
+  if (rateLimit.unlimited) {
+    els.uploadLimitStatus.textContent = "Fact-check runs: unlimited";
+  } else {
+    els.uploadLimitStatus.textContent = `${rateLimit.remaining}/${rateLimit.limit} fact-check runs remaining this hour`;
+  }
 }
 
-function closeHelpModal() {
-  els.helpModal.hidden = true;
+function setProgress(step) {
+  els.emptyOutput.hidden = true;
+  els.resultShell.hidden = true;
+  els.progressList.hidden = false;
+  els.progressList.querySelectorAll("[data-step]").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.step === step);
+    item.classList.toggle("is-done", progressOrder(item.dataset.step) < progressOrder(step));
+  });
 }
 
-function renderAccountModalBody() {
-  const identity = state.account || {};
-  const tier = identity.tier || "guest";
-  const username = identity.username || "Guest";
-  const isAuthenticated = Boolean(identity.authenticated);
-  const details = state.accountDetails;
-  const rateLimit = details?.rate_limit || state.rateLimit;
-
-  els.accountPanelUsername.textContent = details?.username || username;
-  els.accountTierChip.className = `account-chip tier-${tierColorClass(tier)}`;
-  els.accountTierChip.textContent = tier.toUpperCase();
-  els.accountEmail.textContent = details?.email || "Sign in to view your account email.";
-  els.accountTierValue.textContent = prettyTierName(details?.tier || tier);
-  els.accountUsage.textContent = rateLimitText(rateLimit) || "OCR uploads: unavailable.";
-  els.accountUpgradeButton.hidden = !isAuthenticated;
-  els.accountDeleteButton.hidden = !isAuthenticated;
+function progressOrder(step) {
+  return ["preprocessing", "extracting_claims", "retrieving_evidence", "generating_verdict"].indexOf(step);
 }
 
-function setAccountStatus(message, tone = "") {
-  if (!els.accountStatusMessage) return;
-  els.accountStatusMessage.textContent = message || "";
-  els.accountStatusMessage.className = `state-text${tone ? ` ${tone}` : ""}`;
+function clearInput() {
+  state.activeSessionId = null;
+  els.textInput.value = "";
+  els.urlInput.value = "";
+  clearPendingFile();
+  clearResult();
+  setStatus("");
 }
 
-function prettyTierName(tier) {
-  return {
-    guest: "Guest",
-    free: "Free",
-    pro: "Pro",
-    owner: "Owner",
-  }[tier] || "Unknown";
-}
-
-function renderChatOnlySessionShell() {
+function clearPendingFile() {
+  if (state.pendingPreviewUrl) URL.revokeObjectURL(state.pendingPreviewUrl);
+  state.pendingFile = null;
+  state.pendingPreviewUrl = null;
   els.selectedFilePreview.hidden = true;
   els.selectedFilePreview.innerHTML = "";
-  els.convertButton.hidden = true;
-  els.uploadButton.hidden = false;
-  if (els.startAgainButton) {
-    els.startAgainButton.hidden = !state.activeSessionId;
-  }
-  els.dropTitle.textContent = "Attach a document anytime";
+  els.dropTitle.textContent = "Upload or paste a screenshot";
 }
 
-function renderMessages(messages) {
-  const visibleMessages = buildVisibleMessages(messages);
-  if (!visibleMessages.length) {
-    els.answerResult.hidden = true;
-    els.answerResult.innerHTML = "";
-    updateOutputPlaceholderVisibility();
-    return;
-  }
-
-  els.answerResult.hidden = false;
-  els.answerResult.innerHTML = visibleMessages
-    .map((message, index) => {
-      const role = message.role === "user" ? "user" : "assistant";
-      const label = role === "assistant" ? "Jetson AI" : "";
-      const errorClass = message.error ? " is-error" : "";
-      const content = role === "user"
-        ? message.is_ocr_result
-          ? String(message.content || "")
-          : displayUserPrompt(message.content || "")
-        : message.content || "";
-      const speed = role === "assistant" ? answerSpeedText(message) : "";
-      const showCopyButton = role === "assistant"
-        && Boolean(String(message.content || "").trim())
-        && isAssistantMessageComplete(message, index, visibleMessages);
-      const thinkingTrace = role === "assistant" ? String(message.thinking_trace || "").trim() : "";
-      const hasThinkingTrace = Boolean(thinkingTrace);
-      const thinkingInProgress = Boolean(role === "assistant" && message.thinking_in_progress);
-      const showThinkingBox = thinkingInProgress || hasThinkingTrace;
-      const thinkingOpen = Boolean(role === "assistant" && message.thinking_open);
-      const hasFooter = role === "assistant" && (showCopyButton || speed);
-      const thinkingBox = showThinkingBox
-        ? `
-          <section class="thinking-trace ${thinkingInProgress ? "is-live" : ""} ${thinkingOpen ? "is-open" : ""}" data-thinking-trace>
-            <button
-              type="button"
-              class="thinking-trace-toggle"
-              data-thinking-toggle="${index}"
-              aria-expanded="${thinkingOpen ? "true" : "false"}"
-            >
-              <span class="thinking-trace-label">${thinkingInProgress ? "Thinking..." : "Thinking process"}</span>
-              ${
-                thinkingInProgress
-                  ? `<span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>`
-                  : `<span class="thinking-trace-state">done</span>`
-              }
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m7 10 5 5 5-5" />
-              </svg>
-            </button>
-            <div class="thinking-trace-panel" data-thinking-panel ${thinkingOpen ? "" : "hidden"}>
-              <div class="thinking-trace-content" data-thinking-content>
-                ${renderThinkingTraceContent(thinkingTrace)}
-              </div>
-            </div>
-          </section>
-        `
-        : "";
-      return `
-        <article class="chat-message ${role}${errorClass}" data-message-index="${index}" data-message-role="${role}">
-          ${label ? `<div class="chat-role">${label}</div>` : ""}
-          <div class="chat-bubble">
-            ${thinkingBox}
-            ${
-              role === "assistant"
-                ? `<div class="chat-bubble-content" data-chat-content ${content ? "" : "hidden"}>${content ? renderMarkdown(content) : ""}</div>`
-                : content
-                  ? `<div class="chat-bubble-content">${renderMarkdown(content, { preserveWhitespace: Boolean(message.is_ocr_result) })}</div>`
-                  : ""
-            }
-            ${
-              hasFooter
-                ? `
-                  <div class="chat-bubble-footer">
-                    ${
-                      showCopyButton
-                        ? `<button type="button" class="copy-answer-button" data-copy-answer="${index}">Copy</button>`
-                        : "<span></span>"
-                    }
-                    ${speed ? `<div class="chat-bubble-meta" data-chat-meta>${escapeHtml(speed)}</div>` : ""}
-                  </div>
-                `
-                : ""
-            }
-          </div>
-        </article>
-      `;
-    })
-    .join("");
-  els.answerResult.querySelectorAll("[data-thinking-toggle]").forEach((button) => {
-    on(button, "click", () => {
-      const index = Number(button.dataset.thinkingToggle);
-      if (!Number.isInteger(index) || index < 0 || index >= visibleMessages.length) {
-        return;
-      }
-      const message = visibleMessages[index];
-      if (!message || message.role !== "assistant") {
-        return;
-      }
-      message.thinking_open = !Boolean(message.thinking_open);
-      setThinkingTraceOpen(button, message);
-    });
-  });
-  els.answerResult.querySelectorAll("[data-copy-answer]").forEach((button) => {
-    on(button, "click", async () => {
-      const index = Number(button.dataset.copyAnswer);
-      if (!Number.isInteger(index) || index < 0 || index >= visibleMessages.length) {
-        return;
-      }
-      const message = visibleMessages[index];
-      const content = String(message?.content || "").trim();
-      if (!content) return;
-      try {
-        await copyText(content);
-        setCopyButtonFeedback(button, "Copied");
-      } catch (_error) {
-        setCopyButtonFeedback(button, "Failed");
-      }
-    });
-  });
-  queueMathRender(els.answerResult);
-  updateOutputPlaceholderVisibility();
-  els.outputCard.scrollTop = els.outputCard.scrollHeight;
-}
-
-function createStreamingMessageUpdater(messages, assistantIndex) {
-  const pending = {
-    answer: false,
-    reasoning: false,
-  };
-  let frameQueued = false;
-
-  function apply() {
-    frameQueued = false;
-    const message = messages[assistantIndex];
-    const visibleAssistantIndex = mapRawMessageIndexToVisibleIndex(messages, assistantIndex);
-    const article = els.answerResult?.querySelector(
-      `[data-message-index="${visibleAssistantIndex}"][data-message-role="assistant"]`
-    );
-    if (!message || !article) {
-      pending.answer = false;
-      pending.reasoning = false;
-      return;
-    }
-
-    const shouldStickToBottom = isOutputScrolledNearBottom();
-    if (pending.reasoning) {
-      updateThinkingTraceElement(article, message, { onlyWhenOpen: true });
-    }
-    if (pending.answer) {
-      updateChatContentElement(article, message);
-    }
-    pending.answer = false;
-    pending.reasoning = false;
-
-    if (shouldStickToBottom) {
-      els.outputCard.scrollTop = els.outputCard.scrollHeight;
-    }
-  }
-
-  return {
-    queue(kind) {
-      if (kind === "reasoning") {
-        pending.reasoning = true;
-      } else {
-        pending.answer = true;
-      }
-      if (frameQueued) return;
-      frameQueued = true;
-      const scheduleFrame = window.requestAnimationFrame
-        ? (callback) => window.requestAnimationFrame(callback)
-        : (callback) => window.setTimeout(callback, 16);
-      scheduleFrame(apply);
-    },
-    flush() {
-      apply();
-    },
-  };
-}
-
-function updateChatContentElement(article, message) {
-  const contentEl = article.querySelector("[data-chat-content]");
-  if (!contentEl) return;
-  const content = String(message.content || "");
-  contentEl.hidden = !content;
-  contentEl.innerHTML = content ? renderMarkdown(content) : "";
-  queueMathRender(contentEl);
-}
-
-function updateThinkingTraceElement(article, message, options = {}) {
-  const traceEl = article.querySelector("[data-thinking-trace]");
-  const contentEl = article.querySelector("[data-thinking-content]");
-  const panelEl = article.querySelector("[data-thinking-panel]");
-  if (!traceEl || !contentEl) return;
-  if (options.onlyWhenOpen && panelEl?.hidden) return;
-  traceEl.classList.toggle("is-live", Boolean(message.thinking_in_progress));
-  contentEl.innerHTML = renderThinkingTraceContent(String(message.thinking_trace || "").trim());
-  queueMathRender(contentEl);
-}
-
-function setThinkingTraceOpen(button, message) {
-  const article = button.closest("[data-message-role='assistant']");
-  const traceEl = article?.querySelector("[data-thinking-trace]");
-  const panelEl = article?.querySelector("[data-thinking-panel]");
-  if (!traceEl || !panelEl) return;
-  const isOpen = Boolean(message.thinking_open);
-  traceEl.classList.toggle("is-open", isOpen);
-  panelEl.hidden = !isOpen;
-  button.setAttribute("aria-expanded", isOpen ? "true" : "false");
-  if (isOpen) {
-    updateThinkingTraceElement(article, message);
-  }
-}
-
-function renderThinkingTraceContent(thinkingTrace) {
-  const trace = String(thinkingTrace || "").trim();
-  return trace
-    ? renderMarkdown(trace)
-    : `<p class="thinking-placeholder">Model is preparing the response.</p>`;
-}
-
-function isOutputScrolledNearBottom() {
-  if (!els.outputCard) return true;
-  const distance = els.outputCard.scrollHeight - els.outputCard.scrollTop - els.outputCard.clientHeight;
-  return distance < 80;
-}
-
-function setThinkingMode(mode) {
-  state.thinkingMode = mode === "thinking" ? "thinking" : "fast";
-  if (els.thinkingModeLabel) {
-    els.thinkingModeLabel.textContent = state.thinkingMode === "thinking" ? "Thinking" : "Fast";
-  }
-  els.thinkingModeMenu?.querySelectorAll("[data-thinking-mode]").forEach((button) => {
-    const isActive = button.dataset.thinkingMode === state.thinkingMode;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-}
-
-function toggleThinkingModeMenu() {
-  const menu = els.thinkingModeMenu;
-  const button = els.thinkingModeButton;
-  if (!menu || !button) return;
-  const willOpen = menu.hidden;
-  menu.hidden = !willOpen;
-  button.setAttribute("aria-expanded", willOpen ? "true" : "false");
-}
-
-function closeThinkingModeMenu() {
-  const menu = els.thinkingModeMenu;
-  const button = els.thinkingModeButton;
-  if (!menu || !button) return;
-  menu.hidden = true;
-  button.setAttribute("aria-expanded", "false");
-}
-
-function answerSpeedText(message) {
-  const elapsedMs = Number(message.elapsed_ms);
-  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return "";
-  const completionTokens = Number(message.completion_tokens);
-  const totalTokens = Number(message.total_tokens);
-  const tokens = Number.isFinite(completionTokens) && completionTokens > 0
-    ? completionTokens
-    : Number.isFinite(totalTokens) && totalTokens > 0
-      ? totalTokens
-      : 0;
-  if (tokens <= 0) return "";
-  const perSecond = tokens / (elapsedMs / 1000);
-  if (!Number.isFinite(perSecond) || perSecond <= 0) return "";
-  return `${Math.round(perSecond)} tok/s`;
-}
-
-function renderRecentSessions(sessions) {
-  state.recentSessionIds = (sessions || []).map((session) => session.id);
-  reconcileSelectedSessions(sessions);
-  updateSelectionUi();
-  if (!sessions.length) {
-    els.sessionList.innerHTML = `<div class="empty-list">Recent sessions will appear here.</div>`;
-    return;
-  }
-
-  els.sessionList.innerHTML = sessions
-    .map((session) => {
-      const count = session.page_count || 1;
-      const unit = session.file_type === "PDF" ? (count === 1 ? "page" : "pages") : "image";
-      const subtitle = session.has_document
-        ? `${escapeHtml(session.file_type)} &nbsp;•&nbsp; ${count} ${unit}`
-        : "Chat session";
-      const thumbnail = session.thumbnail_url
-        ? `<img src="${session.thumbnail_url}" alt="" loading="lazy" />`
-        : iconFile;
-      const isSelected = state.selectedSessionIds.has(session.id);
-      const selector = state.selectionMode
-        ? `
-          <label class="session-selector">
-            <input type="checkbox" data-select-session="${session.id}" ${isSelected ? "checked" : ""} />
-            <span></span>
-          </label>
-        `
-        : "";
-      return `
-        <div class="session-row${isSelected ? " is-selected" : ""}${state.selectionMode ? " is-selecting" : ""}" data-session-id="${session.id}">
-          ${selector}
-          <button class="session-open" type="button" data-open-session="${session.id}">
-            <span class="session-main">
-              <span class="thumb">${thumbnail}</span>
-              <span class="session-copy">
-                <span class="session-title">${escapeHtml(session.filename)}</span>
-                <span class="session-subtitle">${subtitle}</span>
-              </span>
-            </span>
-          </button>
-          <span class="session-meta">
-            <span>${relativeTime(session.updated_at)}</span>
-            <span class="session-menu-wrap">
-              <button class="kebab" type="button" aria-label="Session options" title="Session options" data-menu-session="${session.id}">
-                ${iconMore}
-              </button>
-              <span class="session-menu" hidden>
-                <button type="button" data-rename-session="${session.id}" data-session-name="${escapeHtml(session.filename)}">Rename session</button>
-                <button type="button" data-delete-session="${session.id}">Delete session</button>
-              </span>
-            </span>
-          </span>
-        </div>
-      `;
-    })
-    .join("");
-
-  els.sessionList.querySelectorAll("[data-open-session]").forEach((button) => {
-    button.addEventListener("click", () => {
-      if (state.selectionMode) {
-        toggleSessionSelection(button.dataset.openSession);
-        return;
-      }
-      restoreSession(button.dataset.openSession);
-    });
-  });
-  els.sessionList.querySelectorAll("[data-select-session]").forEach((input) => {
-    input.addEventListener("click", (event) => {
-      event.stopPropagation();
-    });
-    input.addEventListener("change", () => {
-      toggleSessionSelection(input.dataset.selectSession, input.checked);
-    });
-  });
-  els.sessionList.querySelectorAll("[data-menu-session]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      if (state.selectionMode) {
-        event.preventDefault();
-        return;
-      }
-      event.stopPropagation();
-      const menu = button.parentElement.querySelector(".session-menu");
-      const willOpen = menu.hidden;
-      closeSessionMenus();
-      menu.hidden = !willOpen;
-      button.closest(".session-row")?.classList.toggle("is-menu-open", willOpen);
-    });
-  });
-  els.sessionList.querySelectorAll("[data-rename-session]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeSessionMenus();
-      renameSession(button.dataset.renameSession, button.dataset.sessionName);
-    });
-  });
-  els.sessionList.querySelectorAll("[data-delete-session]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeSessionMenus();
-      deleteSession(button.dataset.deleteSession);
-    });
-  });
-}
-
-function closeSessionMenus() {
-  els.sessionList.querySelectorAll(".session-menu").forEach((menu) => {
-    menu.hidden = true;
-  });
-  els.sessionList.querySelectorAll(".session-row.is-menu-open").forEach((row) => {
-    row.classList.remove("is-menu-open");
-  });
-}
-
-function clearOutput() {
-  state.currentMessages = [];
-  state.currentMarkdown = "";
-  hideOcrContent();
-  els.answerResult.hidden = true;
-  els.answerResult.innerHTML = "";
-  clearCopyFeedback();
-  updateOutputPlaceholderVisibility();
-}
-
-function setStatus(message, kind = "") {
-  els.uploadState.textContent = message;
-  els.uploadState.className = `state-text ${kind}`.trim();
+function clearResult() {
+  els.progressList.hidden = true;
+  els.resultShell.hidden = true;
+  els.emptyOutput.hidden = false;
 }
 
 function setControlsBusy(isBusy) {
+  els.checkButton.disabled = isBusy;
+  els.clearButton.disabled = isBusy;
   els.uploadButton.disabled = isBusy;
-  els.convertButton.disabled = isBusy;
-  if (els.startAgainButton) {
-    els.startAgainButton.disabled = isBusy;
-  }
-  els.sendButton.disabled = isBusy;
-  if (els.thinkingModeButton) {
-    els.thinkingModeButton.disabled = isBusy;
-  }
-  els.thinkingModeMenu?.querySelectorAll("button").forEach((button) => {
-    button.disabled = isBusy;
-  });
-  els.fileInput.disabled = isBusy;
-  if (els.copyOcrButton) {
-    els.copyOcrButton.disabled = isBusy;
-  }
-  if (els.selectSessionsButton) {
-    els.selectSessionsButton.disabled = isBusy;
-  }
-  if (els.selectAllSessionsButton) {
-    els.selectAllSessionsButton.disabled = isBusy || !(state.recentSessionIds || []).length;
-  }
-  if (els.deleteSelectedButton) {
-    els.deleteSelectedButton.disabled = isBusy || !state.selectedSessionIds.size;
-  }
-  if (els.cancelSelectionButton) {
-    els.cancelSelectionButton.disabled = isBusy;
-  }
+  els.modeTabs.forEach((button) => { button.disabled = isBusy; });
 }
 
-async function streamAskResponse({ sessionId, payload, onToken, onDone }) {
-  const response = await fetch(`/sessions/${sessionId}/ask/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorResponse(response));
-  }
-  if (!response.body) {
-    throw new Error("Streaming is not supported in this browser.");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let rawBuffer = "";
-  let hasDoneEvent = false;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    rawBuffer += decoder.decode(value, { stream: true });
-    const frames = splitSseFrames(rawBuffer);
-    rawBuffer = frames.remainder;
-
-    for (const frame of frames.frames) {
-      const parsed = parseSseFrame(frame);
-      if (!parsed) continue;
-      const { event, data } = parsed;
-      if (event === "token") {
-        const delta = String(data?.delta || "");
-        if (delta && typeof onToken === "function") {
-          onToken(delta, String(data?.kind || ""));
-        }
-        continue;
-      }
-      if (event === "done") {
-        hasDoneEvent = true;
-        if (typeof onDone === "function") {
-          onDone(data);
-        }
-        continue;
-      }
-      if (event === "error") {
-        throw new Error(String(data?.detail || "Streaming request failed."));
-      }
-    }
-  }
-
-  if (!hasDoneEvent) {
-    throw new Error("Stream ended before completion.");
-  }
+function updateSelectionControls() {
+  const count = state.selectedSessionIds.size;
+  els.selectionSummary.textContent = `${count} selected`;
+  els.deleteSelectedButton.disabled = count === 0;
 }
 
-function splitSseFrames(buffer) {
-  const normalized = buffer.replace(/\r\n/g, "\n");
-  const frames = [];
-  let start = 0;
-  while (true) {
-    const idx = normalized.indexOf("\n\n", start);
-    if (idx === -1) break;
-    frames.push(normalized.slice(start, idx));
-    start = idx + 2;
-  }
-  return {
-    frames,
-    remainder: normalized.slice(start),
-  };
+function setStatus(message, tone = "") {
+  els.uploadState.textContent = message || "";
+  els.uploadState.className = `state-text ${tone}`.trim();
 }
 
-function parseSseFrame(frame) {
-  const trimmed = String(frame || "").trim();
-  if (!trimmed) return null;
-  const lines = trimmed.split("\n");
-  let event = "message";
-  const dataLines = [];
-
-  for (const line of lines) {
-    if (!line || line.startsWith(":")) continue;
-    if (line.startsWith("event:")) {
-      event = line.slice(6).trim() || "message";
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-
-  if (!dataLines.length) return null;
-  try {
-    return {
-      event,
-      data: JSON.parse(dataLines.join("\n")),
-    };
-  } catch (_error) {
-    return null;
-  }
+function setAccountStatus(message) {
+  els.accountStatusMessage.textContent = message;
 }
 
 async function readJsonResponse(response) {
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.detail || "Request failed.");
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { detail: text };
+    }
   }
+  if (!response.ok) throw new Error(data.detail || `Request failed with HTTP ${response.status}`);
   return data;
 }
 
-async function readErrorResponse(response) {
-  const text = await response.text().catch(() => "");
-  if (!text) return "Request failed.";
-  try {
-    const parsed = JSON.parse(text);
-    return parsed?.detail || text || "Request failed.";
-  } catch (_error) {
-    return text;
-  }
-}
-
-function toFiniteNumberOrUndefined(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function validateFile(file) {
-  const allowedTypes = ["image/png", "image/jpeg", "application/pdf"];
-  const allowedExtensions = [".png", ".jpg", ".jpeg", ".pdf"];
-  const name = file.name.toLowerCase();
-  const hasAllowedExtension = allowedExtensions.some((ext) => name.endsWith(ext));
-  if (!allowedTypes.includes(file.type) && !hasAllowedExtension) {
-    return "Only PNG, JPG, JPEG, and PDF uploads are supported.";
-  }
+function validateImage(file) {
+  const allowed = ["image/png", "image/jpeg"];
+  if (!allowed.includes(file.type)) return "Only PNG, JPG, and JPEG screenshots are supported.";
   return "";
 }
 
-function renderMarkdown(value, options = {}) {
-  const preserveWhitespace = Boolean(options.preserveWhitespace);
-  const lines = String(value).split(/\r?\n/);
-  const html = [];
-  let listItems = [];
-  let fenceMarker = null;
-  let fenceLanguage = "";
-  let fenceLines = [];
-  let mathBlockLines = null;
-
-  const flushList = () => {
-    if (listItems.length) {
-      html.push(`<ul>${listItems.map((item) => `<li>${item}</li>`).join("")}</ul>`);
-      listItems = [];
-    }
-  };
-
-  const flushFence = () => {
-    if (!fenceMarker) return;
-    const className = fenceLanguage ? ` class="language-${escapeHtml(fenceLanguage)}"` : "";
-    html.push(
-      `<pre class="markdown-code"><code${className}>${escapeHtml(fenceLines.join("\n"))}</code></pre>`
-    );
-    fenceMarker = null;
-    fenceLanguage = "";
-    fenceLines = [];
-  };
-
-  const flushMathBlock = () => {
-    if (mathBlockLines === null) return;
-    const latex = mathBlockLines.join("\n").trim();
-    if (latex) {
-      html.push(`<div class="math-block" data-math-block>\\[${escapeHtml(latex)}\\]</div>`);
-    }
-    mathBlockLines = null;
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (fenceMarker) {
-      if (line === fenceMarker) {
-        flushFence();
-      } else {
-        fenceLines.push(rawLine);
-      }
-      continue;
-    }
-    if (mathBlockLines !== null) {
-      if (line === "$$") {
-        flushMathBlock();
-      } else {
-        mathBlockLines.push(rawLine);
-      }
-      continue;
-    }
-    if (!line) {
-      flushList();
-      continue;
-    }
-    if (/^<!--.*-->$/.test(line)) {
-      flushList();
-      continue;
-    }
-    if (/^`{3,}/.test(line)) {
-      flushList();
-      fenceMarker = line.match(/^`+/)?.[0] || "```";
-      fenceLanguage = line.slice(fenceMarker.length).trim();
-      fenceLines = [];
-      continue;
-    }
-    if (line === "$$") {
-      flushList();
-      mathBlockLines = [];
-      continue;
-    }
-    if (/^---+$/.test(line)) {
-      flushList();
-      html.push("<hr />");
-      continue;
-    }
-    if (/^#{1,6}\s+/.test(line)) {
-      flushList();
-      const level = Math.min(line.match(/^#+/)?.[0].length || 3, 4);
-      html.push(`<h${level}>${inlineMarkdown(escapeHtml(line.replace(/^#{1,6}\s+/, "")))}</h${level}>`);
-    } else if (/^[-*]\s+/.test(line)) {
-      listItems.push(inlineMarkdown(escapeHtml(line.replace(/^[-*]\s+/, ""))));
-    } else {
-      flushList();
-      const content = preserveWhitespace ? rawLine.replace(/\t/g, "    ") : line;
-      const escaped = inlineMarkdown(escapeHtml(content));
-      const className = preserveWhitespace ? ` class="ocr-line"` : "";
-      html.push(`<p${className}>${escaped}</p>`);
-    }
-  }
-  flushMathBlock();
-  flushFence();
-  flushList();
-  return html.join("") || "<p></p>";
+function evidenceSummary(evidence) {
+  if (!evidence.length) return "No evidence returned.";
+  const sources = evidence.map((item) => item.source_type || item.source_id || "evidence");
+  return [...new Set(sources)].join(", ");
 }
 
-function queueMathRender(root) {
-  const target = root instanceof Element ? root : document.body;
-  if (!target) return;
-  if (mathRenderFrame && window.cancelAnimationFrame) {
-    window.cancelAnimationFrame(mathRenderFrame);
-    mathRenderFrame = 0;
-  }
-  const run = () => {
-    mathRenderFrame = 0;
-    renderMath(target);
-  };
-  mathRenderFrame = window.requestAnimationFrame
-    ? window.requestAnimationFrame(run)
-    : window.setTimeout(run, 16);
+function formatConfidence(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "Not reported";
 }
 
-function renderMath(root) {
-  const target = root instanceof Element ? root : document.body;
-  if (!target || !window.MathJax?.typesetPromise) return;
-  const startup = window.MathJax.startup?.promise || Promise.resolve();
-  startup
-    .then(() => {
-      if (typeof window.MathJax.typesetClear === "function") {
-        window.MathJax.typesetClear([target]);
-      }
-      return window.MathJax.typesetPromise([target]);
-    })
-    .catch((_error) => {});
-}
-
-function updateOutputPlaceholderVisibility() {
-  const hasMarkdown = isOcrVisible() && Boolean(els.ocrResult?.innerHTML.trim());
-  const hasMessages = !els.answerResult.hidden && Boolean(els.answerResult.innerHTML.trim());
-  els.emptyOutput.hidden = hasMarkdown || hasMessages;
-}
-
-function setQuickActionActive(mode) {
-  document.querySelectorAll(".quick-actions [data-mode]").forEach((button) => {
-    const buttonMode = button.dataset.mode || "";
-    button.classList.toggle("is-active", Boolean(mode) && buttonMode === normalizeQuickActionMode(mode));
-  });
-  if (els.translateQuickAction) {
-    els.translateQuickAction.classList.toggle("is-active", String(mode || "").startsWith("translate:"));
-  }
-}
-
-function quickActionPrompt(mode) {
-  if (String(mode || "").startsWith("translate:")) return `Translate to ${state.translateLanguage}`;
-  return "Answer the question(s)";
-}
-
-function inlineMarkdown(value) {
-  return value
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>");
-}
-
-function fileTypeLabel(filename, contentType) {
-  if (contentType === "application/x-chat-session") return "CHAT";
-  const suffix = String(filename || "").split(".").pop();
-  if (suffix && suffix !== filename) return suffix.toUpperCase();
-  if (contentType === "application/pdf") return "PDF";
-  if (String(contentType || "").startsWith("image/")) {
-    return contentType.split("/", 2)[1].toUpperCase();
-  }
-  return "FILE";
-}
-
-function displayUserPrompt(value) {
-  return String(value)
-    .replace(/^Answer this question from the OCR text:\s*/i, "")
-    .replace(/^Answer the question\(s\) from the OCR text:\s*/i, "")
-    .replace(/^Translate to [^:]+ using the OCR text:\s*/i, "")
-    .replace(/^Answer this question:\s*/i, "")
-    .replace(/^Answer the question\(s\):\s*/i, "")
-    .replace(/^Translate to [^:]+:\s*/i, "");
-}
-
-function toggleTranslateLanguageMenu() {
-  const menu = els.translateLanguageMenu;
-  const button = els.translateLanguageButton;
-  if (!menu || !button) return;
-  const willOpen = menu.hidden;
-  menu.hidden = !willOpen;
-  button.setAttribute("aria-expanded", willOpen ? "true" : "false");
-}
-
-function closeTranslateLanguageMenu() {
-  const menu = els.translateLanguageMenu;
-  const button = els.translateLanguageButton;
-  if (!menu || !button) return;
-  menu.hidden = true;
-  button.setAttribute("aria-expanded", "false");
-}
-
-function setTranslateLanguage(language) {
-  state.translateLanguage = String(language || "Vietnamese").trim() || "Vietnamese";
-  if (els.translateLanguageLabel) {
-    els.translateLanguageLabel.textContent = state.translateLanguage;
-  }
-  if (String(state.activeMode || "").startsWith("translate:")) {
-    state.activeMode = normalizeQuickActionMode("translate");
-    setQuickActionActive(state.activeMode);
-  }
-  els.translateLanguageMenu?.querySelectorAll("[data-translate-language]").forEach((button) => {
-    const isActive = button.dataset.translateLanguage === state.translateLanguage;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-}
-
-function normalizeQuickActionMode(mode) {
-  if (mode === "translate" || String(mode || "").startsWith("translate:")) {
-    return `translate:${state.translateLanguage}`;
-  }
-  return String(mode || "");
-}
-
-function canAttachDocument() {
-  return !state.pendingFile && !state.hasDocument && !state.isBusy;
-}
-
-async function copyCurrentOcr() {
-  if (!state.currentMarkdown) return;
-  const textToCopy = cleanedOcrMarkdownForCopy(state.currentMarkdown);
-  try {
-    await copyText(textToCopy);
-    setCopyFeedback("Copied");
-  } catch (error) {
-    setCopyFeedback("Copy failed");
-  }
-}
-
-async function copyText(value) {
-  const textToCopy = String(value || "");
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      return;
-    } catch (_error) {
-      fallbackCopyText(textToCopy);
-      return;
-    }
-  }
-  fallbackCopyText(textToCopy);
-}
-
-function cleanedOcrMarkdownForCopy(value) {
-  return String(value || "")
-    .replace(/^<!--\s*source:\s*.*?-->\s*\n*/i, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function fallbackCopyText(value) {
-  const field = document.createElement("textarea");
-  field.value = value;
-  field.setAttribute("readonly", "readonly");
-  field.style.position = "fixed";
-  field.style.opacity = "0";
-  field.style.left = "-9999px";
-  field.style.top = "0";
-  document.body.appendChild(field);
-  field.select();
-  field.setSelectionRange(0, field.value.length);
-  const copied = document.execCommand("copy");
-  document.body.removeChild(field);
-  if (!copied) {
-    throw new Error("Copy command failed");
-  }
-}
-
-function setCopyFeedback(message) {
-  clearCopyFeedback();
-  if (!els.copyOcrStatus) return;
-  els.copyOcrStatus.textContent = message;
-  if (!message) return;
-  copyFeedbackTimer = window.setTimeout(() => {
-    els.copyOcrStatus.textContent = "";
-    copyFeedbackTimer = null;
-  }, 1800);
-}
-
-function clearCopyFeedback() {
-  if (copyFeedbackTimer) {
-    window.clearTimeout(copyFeedbackTimer);
-    copyFeedbackTimer = null;
-  }
-  if (els.copyOcrStatus) {
-    els.copyOcrStatus.textContent = "";
-  }
-}
-
-function setCopyButtonFeedback(button, message) {
-  if (!button) return;
-  if (button._feedbackTimer) {
-    window.clearTimeout(button._feedbackTimer);
-    button._feedbackTimer = null;
-  }
-  button.disabled = true;
-  button.textContent = message;
-  button._feedbackTimer = window.setTimeout(() => {
-    button.textContent = "Copy";
-    button.disabled = false;
-    button._feedbackTimer = null;
-  }, 1200);
-}
-
-function enterSelectionMode() {
-  state.selectionMode = true;
-  state.selectedSessionIds.clear();
-  closeSessionMenus();
-  updateSelectionUi();
-  loadRecentSessions();
-}
-
-function exitSelectionMode(options = {}) {
-  state.selectionMode = false;
-  state.selectedSessionIds.clear();
-  updateSelectionUi();
-  if (!options.silent) {
-    loadRecentSessions();
-  }
-}
-
-function toggleSessionSelection(id, forceChecked) {
-  if (!id) return;
-  const shouldSelect = forceChecked ?? !state.selectedSessionIds.has(id);
-  if (shouldSelect) {
-    state.selectedSessionIds.add(id);
-  } else {
-    state.selectedSessionIds.delete(id);
-  }
-  updateSelectionUi();
-  renderSessionSelectionState();
-}
-
-function toggleSelectAllSessions() {
-  if (!state.selectionMode) return;
-  const visibleIds = state.recentSessionIds || [];
-  if (!visibleIds.length) return;
-
-  const allSelected = visibleIds.every((id) => state.selectedSessionIds.has(id));
-  if (allSelected) {
-    state.selectedSessionIds.clear();
-  } else {
-    visibleIds.forEach((id) => {
-      state.selectedSessionIds.add(id);
-    });
-  }
-
-  updateSelectionUi();
-  renderSessionSelectionState();
-}
-
-function renderSessionSelectionState() {
-  els.sessionList.querySelectorAll(".session-row").forEach((row) => {
-    const id = row.dataset.sessionId;
-    const isSelected = state.selectedSessionIds.has(id);
-    row.classList.toggle("is-selected", isSelected);
-    row.classList.toggle("is-selecting", state.selectionMode);
-  });
-  els.sessionList.querySelectorAll("[data-select-session]").forEach((input) => {
-    input.checked = state.selectedSessionIds.has(input.dataset.selectSession);
-  });
-}
-
-function updateSelectionUi() {
-  if (els.selectSessionsButton) {
-    els.selectSessionsButton.hidden = state.selectionMode;
-  }
-  if (els.deleteSelectedButton) {
-    els.deleteSelectedButton.hidden = !state.selectionMode;
-    els.deleteSelectedButton.disabled = state.isBusy || !state.selectedSessionIds.size;
-  }
-  if (els.selectAllSessionsButton) {
-    const visibleIds = state.recentSessionIds || [];
-    const hasVisible = visibleIds.length > 0;
-    const allSelected = hasVisible && visibleIds.every((id) => state.selectedSessionIds.has(id));
-    els.selectAllSessionsButton.hidden = !state.selectionMode;
-    els.selectAllSessionsButton.disabled = state.isBusy || !hasVisible;
-    els.selectAllSessionsButton.textContent = allSelected ? "Clear all" : "Select all";
-  }
-  if (els.cancelSelectionButton) {
-    els.cancelSelectionButton.hidden = !state.selectionMode;
-  }
-  if (els.selectionSummary) {
-    const count = state.selectedSessionIds.size;
-    els.selectionSummary.hidden = !state.selectionMode;
-    els.selectionSummary.textContent = `${count} selected`;
-  }
-}
-
-function reconcileSelectedSessions(sessions) {
-  const validIds = new Set((sessions || []).map((session) => session.id));
-  state.selectedSessionIds.forEach((id) => {
-    if (!validIds.has(id)) {
-      state.selectedSessionIds.delete(id);
-    }
-  });
-}
-
-function showOcrContent(html) {
-  if (!els.ocrResult) return;
-  els.ocrResult.innerHTML = html;
-  if (els.ocrPanel) {
-    els.ocrPanel.hidden = false;
-  }
-  els.ocrResult.hidden = false;
-  queueMathRender(els.ocrResult);
-}
-
-function decorateSessionWithThinkingTrace(session, thinkingTrace) {
-  const trace = String(thinkingTrace || "").trim();
-  if (!trace || !session || !Array.isArray(session.messages)) {
-    return;
-  }
-  for (let idx = session.messages.length - 1; idx >= 0; idx -= 1) {
-    const message = session.messages[idx];
-    if (message?.role !== "assistant") continue;
-    message.thinking_trace = trace;
-    message.thinking_in_progress = false;
-    message.thinking_open = false;
-    break;
-  }
-}
-
-function hideOcrContent() {
-  if (!els.ocrResult) return;
-  els.ocrResult.innerHTML = "";
-  if (els.ocrPanel) {
-    els.ocrPanel.hidden = false;
-  }
-  els.ocrResult.hidden = true;
-}
-
-function isOcrVisible() {
-  return Boolean(els.ocrResult) && !els.ocrResult.hidden;
-}
-
-function buildVisibleMessages(messages) {
-  const rawMessages = Array.isArray(messages) ? messages : [];
-  if (!shouldPrependOcrMessage(rawMessages)) {
-    return rawMessages;
-  }
-  return [
-    {
-      role: "user",
-      content: cleanedOcrMarkdownForCopy(state.currentMarkdown),
-      is_ocr_result: true,
-      synthetic_ocr_message: true,
-    },
-    ...rawMessages,
-  ];
-}
-
-function shouldPrependOcrMessage(messages) {
-  const ocrText = cleanedOcrMarkdownForCopy(state.currentMarkdown);
-  if (!ocrText) return false;
-  const firstMessage = Array.isArray(messages) && messages.length ? messages[0] : null;
-  if (!firstMessage || firstMessage.role !== "user") return true;
-  return cleanedOcrMarkdownForCopy(firstMessage.content) !== ocrText;
-}
-
-function mapRawMessageIndexToVisibleIndex(rawMessages, rawIndex) {
-  if (!Number.isInteger(rawIndex) || rawIndex < 0) return rawIndex;
-  return shouldPrependOcrMessage(rawMessages) ? rawIndex + 1 : rawIndex;
-}
-
-function isAssistantMessageComplete(message, index, visibleMessages) {
-  if (!message || message.role !== "assistant" || message.error) {
-    return false;
-  }
-  if (message.answer_complete === true) return true;
-  if (message.answer_complete === false) return false;
-  if (message.thinking_in_progress) return false;
-  return true;
-}
-
-function ensureDynamicChatStyles() {
-  if (document.getElementById("dynamic-chat-overrides")) {
-    return;
-  }
-  const style = document.createElement("style");
-  style.id = "dynamic-chat-overrides";
-  style.textContent = `
-    .ocr-panel {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      border-bottom: 1px solid var(--line);
-      background: rgba(247, 250, 255, 0.96);
-    }
-    .ocr-toolbar {
-      position: static !important;
-      top: auto !important;
-    }
-    body.dark .ocr-panel {
-      background: rgba(22, 32, 54, 0.96);
-    }
-    .chat-message.user .chat-bubble {
-      color: #1b2747 !important;
-      border: 1px solid #d8e1ec !important;
-      background: #ffffff !important;
-    }
-    .chat-message.user .chat-bubble code {
-      color: #1b2747 !important;
-      background: #eef2ff !important;
-    }
-    .chat-message.assistant .chat-bubble {
-      color: #1b2747 !important;
-      border: 1px solid #d8e1ec !important;
-      background: #f2f4f7 !important;
-    }
-    .chat-bubble-footer {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      min-height: 20px;
-      margin-top: 8px;
-    }
-    .chat-bubble-footer .chat-bubble-meta {
-      margin-top: 0;
-    }
-    .copy-answer-button {
-      min-height: 20px;
-      padding: 0 6px;
-      border: 1px solid var(--line-strong);
-      border-radius: 5px;
-      color: #2f426f;
-      background: linear-gradient(180deg, #ffffff, #f5f8ff);
-      font-size: 11px;
-      font-weight: 700;
-      line-height: 1;
-    }
-  `;
-  document.head.appendChild(style);
-}
-
-function on(element, eventName, handler) {
-  if (!element) return;
-  element.addEventListener(eventName, handler);
-}
-
-function relativeTime(value) {
-  const then = new Date(value);
-  if (Number.isNaN(then.getTime())) return "";
-  const seconds = Math.max(1, Math.floor((Date.now() - then.getTime()) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return then.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "Yesterday";
-  if (days < 7) return `${days} days ago`;
-  return then.toLocaleDateString([], { month: "short", day: "numeric" });
+function formatDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function escapeHtml(value) {
-  return String(value)
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -2091,8 +713,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function formatElapsedSeconds(elapsedMs) {
-  const ms = Number(elapsedMs);
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  return `${(ms / 1000).toFixed(1)}s`;
+function on(element, eventName, handler) {
+  if (element) element.addEventListener(eventName, handler);
 }

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal
-from urllib import error, request
+from urllib import error, parse, request
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -44,6 +44,7 @@ from .auth import (
     validate_secret_key,
     verify_password,
 )
+from .clients.fact_check_client import FactCheckClient, FactCheckServiceError
 from .store import SessionStore
 
 
@@ -51,12 +52,14 @@ APP_ROOT = Path(__file__).resolve().parents[2]
 WEB_DATA_DIR = Path(os.environ.get("WEB_APP_DATA_DIR", APP_ROOT / "data" / "web_app"))
 UPLOAD_DIR = WEB_DATA_DIR / "uploads"
 OCR_DIR = WEB_DATA_DIR / "ocr_markdown"
+FACT_CHECK_RESULT_DIR = WEB_DATA_DIR / "fact_check_results"
 DB_PATH = WEB_DATA_DIR / "sessions.sqlite3"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 INDEX_TEMPLATE_PATH = STATIC_DIR / "index.html"
 
 OCR_SERVICE_URL = os.environ.get("OCR_SERVICE_URL", "http://ocr:8000")
 LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://llm:8081")
+FACT_CHECK_SERVICE_URL = os.environ.get("FACT_CHECK_SERVICE_URL", "http://fact-check-service:8082")
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("WEB_REQUEST_TIMEOUT_SECONDS", "360"))
@@ -74,17 +77,21 @@ SMTP_FROM = os.environ.get("WEB_APP_SMTP_FROM", SMTP_USERNAME or "no-reply@jetso
 SMTP_STARTTLS = os.environ.get("WEB_APP_SMTP_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
 
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 ALLOWED_CONTENT_TYPES = {
     "image/png",
     "image/jpeg",
     "application/pdf",
 }
+ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
 CHAT_CONTENT_TYPE = "application/x-chat-session"
+FACT_CHECK_CONTENT_TYPE = "application/x-f1-fact-check"
 CHAT_SESSION_FILENAME = "Untitled chat"
 ASKABLE_STATUSES = {"chat_ready", "ocr_complete", "answered", "llm_failed", "ocr_failed"}
 RECENT_SESSIONS_DEFAULT_LIMIT = 8
 MAX_STORED_SESSIONS = 50
 OCR_UPLOAD_ACTION = "ocr_upload"
+FACT_CHECK_ACTION = "fact_check"
 OCR_UPLOAD_LIMITS = {
     "guest": 10,
     "free": 50,
@@ -97,12 +104,13 @@ BOT_CHALLENGE_MINUTES = 10
 AUTH_ATTEMPT_LIMIT = 30
 AUTH_ATTEMPT_ACTION = "auth_attempt"
 
-for path in (UPLOAD_DIR, OCR_DIR):
+for path in (UPLOAD_DIR, OCR_DIR, FACT_CHECK_RESULT_DIR):
     path.mkdir(parents=True, exist_ok=True)
 
 validate_secret_key(SECRET_KEY)
 store = SessionStore(DB_PATH)
-app = FastAPI(title="OCR AI Assistant", version="0.1.0")
+fact_check_client = FactCheckClient(FACT_CHECK_SERVICE_URL, REQUEST_TIMEOUT_SECONDS)
+app = FastAPI(title="F1 Fact Checker", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -121,6 +129,13 @@ class AskRequest(BaseModel):
     prompt: str = Field(..., min_length=0, max_length=2000)
     mode: str | None = Field(default=None, max_length=64)
     thinking_mode: Literal["fast", "thinking"] = "fast"
+
+
+class CheckSessionRequest(BaseModel):
+    input_type: Literal["text", "url"]
+    text: str | None = Field(default=None, max_length=20000)
+    url: str | None = Field(default=None, max_length=2000)
+    session_id: str | None = Field(default=None, max_length=128)
 
 
 class RenameSessionRequest(BaseModel):
@@ -354,13 +369,231 @@ async def recent_sessions(
                 limit=limit,
                 owner_type=identity.owner_type,
                 owner_id=identity.owner_id,
+                content_type=FACT_CHECK_CONTENT_TYPE,
             )
         ]
     }
 
 
+@app.post("/sessions/check")
+async def check_session(
+    request_body: CheckSessionRequest,
+    identity: Identity = Depends(current_identity),
+) -> dict[str, Any]:
+    identity = coerce_identity(identity)
+    limit_status = rate_limit_status(identity)
+    if not limit_status["unlimited"] and limit_status["remaining"] <= 0:
+        return rate_limit_exceeded_response(limit_status)
+
+    input_type = request_body.input_type
+    input_text = normalize_check_text(request_body.text or "")
+    source_url = normalize_check_url(request_body.url or "")
+    if input_type == "text" and not input_text:
+        raise HTTPException(status_code=400, detail="Text input cannot be empty.")
+    if input_type == "url" and not source_url:
+        raise HTTPException(status_code=400, detail="URL input cannot be empty.")
+
+    record_fact_check(identity)
+    session_id = (request_body.session_id or "").strip() or uuid.uuid4().hex
+    now = utc_now()
+    preview = input_text if input_type == "text" else source_url
+    filename = session_title_from_input(input_type, preview)
+    session = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+    if session is None:
+        store.create_session(
+            session_id=session_id,
+            owner_type=identity.owner_type,
+            owner_id=identity.owner_id,
+            filename=filename,
+            content_type=FACT_CHECK_CONTENT_TYPE,
+            original_path=source_url if input_type == "url" else "",
+            created_at=now,
+            status="preprocessing",
+            input_type=input_type,
+            input_preview=preview[:500],
+        )
+        prune_sessions_for_identity(identity)
+    else:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            now,
+            filename=filename,
+            content_type=FACT_CHECK_CONTENT_TYPE,
+            original_path=source_url if input_type == "url" else "",
+            input_type=input_type,
+            input_preview=preview[:500],
+            status="preprocessing",
+            error=None,
+        )
+
+    started = time.perf_counter()
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        utc_now(),
+        status="generating_verdict",
+    )
+    try:
+        if input_type == "text":
+            result = fact_check_client.check_text(
+                input_text,
+                meta={"session_id": session_id, "owner_type": identity.owner_type},
+            )
+        else:
+            result = fact_check_client.check_url(
+                source_url,
+                meta={"session_id": session_id, "owner_type": identity.owner_type},
+            )
+    except FactCheckServiceError as exc:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            utc_now(),
+            status="error",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    persist_fact_check_result(
+        session_id=session_id,
+        input_type=input_type,
+        result=result,
+        identity=identity,
+        elapsed_ms=elapsed_ms,
+        source_url=source_url if input_type == "url" else None,
+    )
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        utc_now(),
+        status="completed",
+        error=None,
+        answer_elapsed_ms=elapsed_ms,
+    )
+    updated = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Session vanished after fact-check.")
+    data = serialize_session_detail(updated)
+    data["rate_limit"] = rate_limit_status(identity)
+    return data
+
+
+@app.post("/sessions/check-image")
+async def check_image_session(
+    image: UploadFile = File(...),
+    session_id: str | None = None,
+    identity: Identity = Depends(current_identity),
+) -> dict[str, Any]:
+    identity = coerce_identity(identity)
+    filename = sanitize_filename(image.filename or "f1-news-screenshot.png")
+    content_type = normalize_content_type(image.content_type or "", filename)
+    validate_image_upload(filename, content_type)
+    body = await image.read()
+    if not body:
+        raise HTTPException(status_code=400, detail="Upload is empty.")
+
+    limit_status = rate_limit_status(identity)
+    if not limit_status["unlimited"] and limit_status["remaining"] <= 0:
+        return rate_limit_exceeded_response(limit_status)
+    record_fact_check(identity)
+
+    session_id = (session_id or "").strip() or uuid.uuid4().hex
+    now = utc_now()
+    suffix = Path(filename).suffix.lower()
+    image_path = artifact_owner_dir(UPLOAD_DIR, identity) / f"{session_id}{suffix}"
+    image_path.write_bytes(body)
+
+    existing = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+    if existing is None:
+        store.create_session(
+            session_id=session_id,
+            owner_type=identity.owner_type,
+            owner_id=identity.owner_id,
+            filename=filename,
+            content_type=content_type,
+            original_path=image_path,
+            created_at=now,
+            status="preprocessing",
+            input_type="image",
+            input_preview=filename,
+        )
+        prune_sessions_for_identity(identity)
+    else:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            now,
+            filename=filename,
+            content_type=content_type,
+            original_path=str(image_path),
+            input_type="image",
+            input_preview=filename,
+            status="preprocessing",
+            error=None,
+        )
+
+    started = time.perf_counter()
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        utc_now(),
+        status="generating_verdict",
+    )
+    try:
+        result = fact_check_client.check_image(
+            filename=filename,
+            content_type=content_type,
+            body=body,
+            meta={"session_id": session_id, "owner_type": identity.owner_type},
+        )
+    except FactCheckServiceError as exc:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            utc_now(),
+            status="error",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    persist_fact_check_result(
+        session_id=session_id,
+        input_type="image",
+        result=result,
+        identity=identity,
+        elapsed_ms=elapsed_ms,
+        image_path=image_path,
+    )
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        utc_now(),
+        status="completed",
+        error=None,
+        answer_elapsed_ms=elapsed_ms,
+    )
+    updated = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Session vanished after fact-check.")
+    data = serialize_session_detail(updated)
+    data["rate_limit"] = rate_limit_status(identity)
+    return data
+
+
 @app.post("/sessions/chat")
 async def create_chat_session(identity: Identity = Depends(current_identity)) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail="Legacy chat sessions are disabled. Use /sessions/check.")
     identity = coerce_identity(identity)
     session_id = uuid.uuid4().hex
     now = utc_now()
@@ -473,6 +706,7 @@ async def upload_document(
     session_id: str | None = None,
     identity: Identity = Depends(current_identity),
 ) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail="Legacy OCR uploads are disabled. Use /sessions/check-image.")
     identity = coerce_identity(identity)
     filename = sanitize_filename(file.filename or "upload")
     content_type = normalize_content_type(file.content_type or "", filename)
@@ -592,6 +826,7 @@ async def ask_session(
     ask: AskRequest,
     identity: Identity = Depends(current_identity),
 ) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail="Legacy assistant chat is disabled. Use /sessions/check.")
     identity = coerce_identity(identity)
     session = get_owned_session_or_404(session_id, identity)
     if session["status"] not in ASKABLE_STATUSES:
@@ -676,6 +911,7 @@ async def ask_session_stream(
     ask: AskRequest,
     identity: Identity = Depends(current_identity),
 ) -> StreamingResponse:
+    raise HTTPException(status_code=410, detail="Legacy assistant chat is disabled. Use /sessions/check.")
     identity = coerce_identity(identity)
     session = get_owned_session_or_404(session_id, identity)
     if session["status"] not in ASKABLE_STATUSES:
@@ -1031,19 +1267,26 @@ def serialize_session_detail(session: dict[str, Any]) -> dict[str, Any]:
         if path.exists():
             data["ocr_markdown"] = path.read_text(encoding="utf-8")
     data["messages"] = session.get("messages", [])
+    runs = session.get("fact_check_runs", [])
+    data["fact_check_runs"] = [serialize_fact_check_run(run, include_result=False) for run in runs]
+    data["fact_check_result"] = read_fact_check_result(runs[0]) if runs else None
     return data
 
 
 def serialize_session_summary(session: dict[str, Any]) -> dict[str, Any]:
     has_document = has_session_document(session)
+    latest_run = (session.get("fact_check_runs") or [None])[0]
     return {
         "id": session["id"],
         "filename": session["filename"],
         "content_type": session["content_type"],
         "file_type": file_type_label(session["filename"], session["content_type"]),
         "has_document": has_document,
+        "input_type": session.get("input_type"),
+        "input_preview": session.get("input_preview"),
         "status": session["status"],
         "error": session.get("error"),
+        "overall_verdict": latest_run.get("overall_verdict") if latest_run else None,
         "page_count": session.get("page_count"),
         "created_at": session["created_at"],
         "updated_at": session["updated_at"],
@@ -1053,6 +1296,51 @@ def serialize_session_summary(session: dict[str, Any]) -> dict[str, Any]:
         if has_document and str(session["content_type"]).startswith("image/")
         else None,
     }
+
+
+def serialize_fact_check_run(run: dict[str, Any], *, include_result: bool) -> dict[str, Any]:
+    data = {
+        "id": run["id"],
+        "session_id": run["session_id"],
+        "input_type": run["input_type"],
+        "source_url": run.get("source_url"),
+        "source_title": run.get("source_title"),
+        "source_domain": run.get("source_domain"),
+        "overall_verdict": run.get("overall_verdict"),
+        "elapsed_ms": run.get("elapsed_ms"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+        "claims": [
+            {
+                "claim_id": claim.get("claim_id"),
+                "claim_text": claim.get("claim_text"),
+                "claim_type": claim.get("claim_type"),
+                "verdict": claim.get("verdict"),
+                "confidence": claim.get("confidence"),
+                "explanation": claim.get("explanation"),
+            }
+            for claim in run.get("claims", [])
+        ],
+    }
+    if include_result:
+        data["result"] = read_fact_check_result(run)
+    return data
+
+
+def read_fact_check_result(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not run:
+        return None
+    path_value = run.get("result_json_path")
+    if not path_value:
+        return None
+    path = Path(path_value)
+    if not path.exists():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def read_session_markdown(session: dict[str, Any]) -> str:
@@ -1066,6 +1354,85 @@ def read_session_markdown(session: dict[str, Any]) -> str:
     if not markdown:
         return ""
     return markdown
+
+
+def normalize_check_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def normalize_check_url(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    parsed = parse.urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://.")
+    return cleaned
+
+
+def session_title_from_input(input_type: str, value: str) -> str:
+    if input_type == "url":
+        domain = parse.urlparse(value).netloc or "URL"
+        return f"URL check: {domain}"[:160]
+    preview = normalize_check_text(value)
+    if not preview:
+        return "F1 fact-check"
+    return f"Check: {preview[:70]}"[:160]
+
+
+def persist_fact_check_result(
+    *,
+    session_id: str,
+    input_type: str,
+    result: dict[str, Any],
+    identity: Identity,
+    elapsed_ms: int,
+    source_url: str | None = None,
+    image_path: Path | None = None,
+) -> None:
+    run_id = str(result.get("meta", {}).get("run_id") or f"run_{uuid.uuid4().hex}")
+    result_path = artifact_owner_dir(FACT_CHECK_RESULT_DIR, identity) / f"{run_id}.json"
+    result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    source_title = str(meta.get("source_title") or "") or None
+    source_domain = str(meta.get("source_domain") or "") or None
+    if source_url and not source_domain:
+        source_domain = parse.urlparse(source_url).netloc or None
+    now = utc_now()
+    store.create_fact_check_run(
+        run_id=run_id,
+        session_id=session_id,
+        input_type=input_type,
+        source_url=source_url,
+        source_title=source_title,
+        source_domain=source_domain,
+        image_path=image_path,
+        result_json_path=result_path,
+        overall_verdict=str(result.get("verdict") or ""),
+        elapsed_ms=elapsed_ms,
+        created_at=now,
+    )
+    store.replace_claim_results(run_id=run_id, claims=claim_rows_from_result(result))
+
+
+def claim_rows_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(result.get("claims") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        claim = item.get("claim") if isinstance(item.get("claim"), dict) else {}
+        rows.append(
+            {
+                "claim_id": str(claim.get("claim_id") or f"c{index:03d}"),
+                "claim_text": str(claim.get("text") or ""),
+                "claim_type": str(claim.get("claim_type") or claim.get("verification_stream") or ""),
+                "verdict": str(item.get("verdict") or "NOT_ENOUGH_INFO"),
+                "confidence": item.get("confidence") if isinstance(item.get("confidence"), (int, float)) else None,
+                "explanation": str(item.get("rationale") or ""),
+                "evidence_json": json.dumps(item.get("evidence") or [], ensure_ascii=False),
+            }
+        )
+    return rows
 
 
 def validate_empty_prompt_submission(
@@ -1117,6 +1484,15 @@ def validate_upload(filename: str, content_type: str) -> None:
         )
 
 
+def validate_image_upload(filename: str, content_type: str) -> None:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_IMAGE_EXTENSIONS or content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PNG, JPG, and JPEG screenshots are supported.",
+        )
+
+
 def normalize_content_type(content_type: str, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     guessed = mimetypes.types_map.get(suffix, "")
@@ -1150,6 +1526,8 @@ def count_pages(markdown: str, content_type: str) -> int:
 def file_type_label(filename: str, content_type: str) -> str:
     if content_type == CHAT_CONTENT_TYPE:
         return "CHAT"
+    if content_type == FACT_CHECK_CONTENT_TYPE:
+        return "CHECK"
     suffix = Path(filename).suffix.lower().lstrip(".")
     if suffix:
         return suffix.upper()
@@ -1247,7 +1625,7 @@ def record_auth_attempt(email: str) -> None:
 
 
 def send_verification_email(email: str, code: str) -> None:
-    subject = "Verify your OCR AI Assistant account"
+    subject = "Verify your F1 Fact Checker account"
     body = f"Your verification code is {code}. It expires in {PENDING_SIGNUP_HOURS} hours."
     if not SMTP_HOST:
         if AUTH_DEBUG_CODES:
@@ -1357,7 +1735,17 @@ def static_asset_version() -> str:
 def delete_session_artifacts(session: dict[str, Any]) -> None:
     for path_value in (session.get("original_path"), session.get("ocr_markdown_path")):
         if path_value:
-            Path(path_value).unlink(missing_ok=True)
+            path = Path(path_value)
+            if path.is_absolute() or path.parent != Path("."):
+                path.unlink(missing_ok=True)
+    for run in session.get("fact_check_runs", []):
+        for path_value in (
+            run.get("image_path"),
+            run.get("cleaned_text_path"),
+            run.get("result_json_path"),
+        ):
+            if path_value:
+                Path(path_value).unlink(missing_ok=True)
 
 
 def prune_sessions_for_identity(identity: Identity) -> None:
@@ -1372,7 +1760,10 @@ def prune_sessions_for_identity(identity: Identity) -> None:
 
 def has_session_document(session: dict[str, Any]) -> bool:
     original_path = str(session.get("original_path") or "").strip()
-    return bool(original_path) and session.get("content_type") != CHAT_CONTENT_TYPE
+    return bool(original_path) and session.get("content_type") not in {
+        CHAT_CONTENT_TYPE,
+        FACT_CHECK_CONTENT_TYPE,
+    }
 
 
 def identity_from_user(user: dict[str, Any]) -> Identity:
@@ -1432,7 +1823,7 @@ def serialize_account(user: dict[str, Any]) -> dict[str, Any]:
             "remaining": None,
             "limit": None,
             "unlimited": True,
-            "summary": "OCR uploads: unlimited.",
+            "summary": "Fact-check runs: unlimited.",
         }
     else:
         usage = {
@@ -1532,13 +1923,13 @@ def rate_limit_status(identity: Identity) -> dict[str, Any]:
     count = store.count_rate_limit_events(
         owner_type=identity.owner_type,
         owner_id=identity.owner_id,
-        action=OCR_UPLOAD_ACTION,
+        action=FACT_CHECK_ACTION,
         since=since,
     )
     oldest = store.oldest_rate_limit_event_since(
         owner_type=identity.owner_type,
         owner_id=identity.owner_id,
-        action=OCR_UPLOAD_ACTION,
+        action=FACT_CHECK_ACTION,
         since=since,
     )
     reset_at = (now_dt + timedelta(hours=1)).isoformat()
@@ -1555,6 +1946,10 @@ def rate_limit_status(identity: Identity) -> dict[str, Any]:
 
 
 def record_ocr_upload(identity: Identity) -> None:
+    record_fact_check(identity)
+
+
+def record_fact_check(identity: Identity) -> None:
     if OCR_UPLOAD_LIMITS.get(identity.tier) is None:
         return
     now_dt = datetime.now(timezone.utc)
@@ -1562,7 +1957,7 @@ def record_ocr_upload(identity: Identity) -> None:
     store.add_rate_limit_event(
         owner_type=identity.owner_type,
         owner_id=identity.owner_id,
-        action=OCR_UPLOAD_ACTION,
+        action=FACT_CHECK_ACTION,
         created_at=now_dt.isoformat(),
     )
 
@@ -1571,7 +1966,7 @@ def rate_limit_exceeded_response(limit_status: dict[str, Any]) -> JSONResponse:
     return JSONResponse(
         status_code=429,
         content={
-            "detail": "Hourly OCR upload limit reached.",
+            "detail": "Hourly fact-check limit reached.",
             "limit": limit_status["limit"],
             "remaining": 0,
             "reset_at": limit_status["reset_at"],

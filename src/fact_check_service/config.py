@@ -16,6 +16,10 @@ class FactCheckConfig:
     fact_metadata_path: Path
     jolpica_base_url: str
     jolpica_timeout_seconds: float
+    llm_service_url: str
+    llm_timeout_seconds: float
+    brave_search_count: int
+    brave_search_timeout: float
 
     @classmethod
     def from_env(cls) -> "FactCheckConfig":
@@ -31,4 +35,8 @@ class FactCheckConfig:
             ),
             jolpica_base_url=os.environ.get("JOLPICA_BASE_URL", "https://api.jolpi.ca/ergast/f1").rstrip("/"),
             jolpica_timeout_seconds=float(os.environ.get("JOLPICA_TIMEOUT_SECONDS", "20")),
+            llm_service_url=os.environ.get("LLM_SERVICE_URL", "http://llm-service:8081").rstrip("/"),
+            llm_timeout_seconds=float(os.environ.get("FACT_LLM_TIMEOUT_SECONDS", "120")),
+            brave_search_count=int(os.environ.get("BRAVE_SEARCH_COUNT", os.environ.get("BRAVE_SEARCH_TOP_N", "3"))),
+            brave_search_timeout=float(os.environ.get("BRAVE_SEARCH_TIMEOUT", "10")),
         )
