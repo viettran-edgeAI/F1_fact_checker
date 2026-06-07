@@ -49,42 +49,43 @@ Gemma generates claim-level verdict
 Aggregate final verdict
 ```
 
+```mermaid
 flowchart TD
-    A[User input] --> B{Input type?}
+    A["User input"] --> B{"Input type?"}
 
-    B -->|Text| C[Normalize text]
-    B -->|Image / Screenshot| D[OCR service<br/>PP-OCRv5 det + rec]
-    B -->|URL| E[URL fetch / article extraction<br/>or Brave-assisted fetch]
+    B -->|Text| C["Normalize text"]
+    B -->|Image / Screenshot| D["OCR service<br/>PP-OCRv5 det + rec"]
+    B -->|URL| E["URL fetch / article extraction<br/>or Brave-assisted fetch"]
 
     D --> C
     E --> C
 
-    C --> F[Clean text<br/>remove noise, boilerplate, OCR artifacts]
+    C --> F["Clean text<br/>remove noise, boilerplate, OCR artifacts"]
 
-    F --> G[Gemma: F1 relevance classification]
+    F --> G["Gemma: F1 relevance classification"]
 
-    G -->|Not F1 related| H[Return early response]
-    H --> H1[Message:<br/>This content is not related to Formula 1.<br/>No fact-check was performed.]
+    G -->|Not F1 related| H["Return early response"]
+    H --> H1["Message:<br/>This content is not related to Formula 1.<br/>No fact-check was performed."]
 
-    G -->|F1 related| I[Gemma: extract checkable claims]
+    G -->|F1 related| I["Gemma: extract checkable claims"]
 
-    I --> J{Any checkable claims?}
+    I --> J{"Any checkable claims?"}
 
-    J -->|No| K[Return:<br/>F1-related content found,<br/>but no checkable claim detected]
+    J -->|No| K["Return:<br/>F1-related content found,<br/>but no checkable claim detected"]
 
-    J -->|Yes| L[Gemma: classify each claim]
+    J -->|Yes| L["Gemma: classify each claim"]
 
-    L --> M{Claim route?}
+    L --> M{"Claim route?"}
 
-    M -->|Structured F1 fact| N[Local Knowledge DB<br/>SQLite + FAISS]
-    M -->|News / statement / rumor / drama| O[Internet Search<br/>Brave Search API]
+    M -->|Structured F1 fact| N["Local Knowledge DB<br/>SQLite + FAISS"]
+    M -->|News / statement / rumor / drama| O["Internet Search<br/>Brave Search API"]
 
-    N --> P[Evidence items]
+    N --> P["Evidence items"]
     O --> P
 
-    P --> Q[Gemma: verdict generation]
-    Q --> R[Final fact-check result]
-
+    P --> Q["Gemma: verdict generation"]
+    Q --> R["Final fact-check result"]
+```
 
 Each claim result should clearly state whether it was verified by the local knowledge database, Brave Search web evidence, or both.
 
