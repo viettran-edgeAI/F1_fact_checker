@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hmac
 import json
 import mimetypes
@@ -10,15 +9,14 @@ import secrets
 import smtplib
 import time
 import uuid
-from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal
-from urllib import error, parse, request
+from urllib import parse
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -51,14 +49,11 @@ from .store import SessionStore
 APP_ROOT = Path(__file__).resolve().parents[2]
 WEB_DATA_DIR = Path(os.environ.get("WEB_APP_DATA_DIR", APP_ROOT / "data" / "web_app"))
 UPLOAD_DIR = WEB_DATA_DIR / "uploads"
-OCR_DIR = WEB_DATA_DIR / "ocr_markdown"
 FACT_CHECK_RESULT_DIR = WEB_DATA_DIR / "fact_check_results"
 DB_PATH = WEB_DATA_DIR / "sessions.sqlite3"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 INDEX_TEMPLATE_PATH = STATIC_DIR / "index.html"
 
-OCR_SERVICE_URL = os.environ.get("OCR_SERVICE_URL", "http://ocr:8000")
-LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://llm:8081")
 FACT_CHECK_SERVICE_URL = os.environ.get("FACT_CHECK_SERVICE_URL", "http://fact-check-service:8082")
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -76,23 +71,13 @@ SMTP_PASSWORD = os.environ.get("WEB_APP_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("WEB_APP_SMTP_FROM", SMTP_USERNAME or "no-reply@jetsonocrai.cc").strip()
 SMTP_STARTTLS = os.environ.get("WEB_APP_SMTP_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
 
-ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-ALLOWED_CONTENT_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "application/pdf",
-}
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
-CHAT_CONTENT_TYPE = "application/x-chat-session"
 FACT_CHECK_CONTENT_TYPE = "application/x-f1-fact-check"
-CHAT_SESSION_FILENAME = "Untitled chat"
-ASKABLE_STATUSES = {"chat_ready", "ocr_complete", "answered", "llm_failed", "ocr_failed"}
 RECENT_SESSIONS_DEFAULT_LIMIT = 8
 MAX_STORED_SESSIONS = 50
-OCR_UPLOAD_ACTION = "ocr_upload"
 FACT_CHECK_ACTION = "fact_check"
-OCR_UPLOAD_LIMITS = {
+FACT_CHECK_LIMITS = {
     "guest": 10,
     "free": 50,
     "pro": 2000,
@@ -104,7 +89,7 @@ BOT_CHALLENGE_MINUTES = 10
 AUTH_ATTEMPT_LIMIT = 30
 AUTH_ATTEMPT_ACTION = "auth_attempt"
 
-for path in (UPLOAD_DIR, OCR_DIR, FACT_CHECK_RESULT_DIR):
+for path in (UPLOAD_DIR, FACT_CHECK_RESULT_DIR):
     path.mkdir(parents=True, exist_ok=True)
 
 validate_secret_key(SECRET_KEY)
@@ -123,12 +108,6 @@ async def disable_cache_for_ui(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
-
-
-class AskRequest(BaseModel):
-    prompt: str = Field(..., min_length=0, max_length=2000)
-    mode: str | None = Field(default=None, max_length=64)
-    thinking_mode: Literal["fast", "thinking"] = "fast"
 
 
 class CheckSessionRequest(BaseModel):
@@ -591,26 +570,6 @@ async def check_image_session(
     return data
 
 
-@app.post("/sessions/chat")
-async def create_chat_session(identity: Identity = Depends(current_identity)) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="Legacy chat sessions are disabled. Use /sessions/check.")
-    identity = coerce_identity(identity)
-    session_id = uuid.uuid4().hex
-    now = utc_now()
-    session = store.create_session(
-        session_id=session_id,
-        owner_type=identity.owner_type,
-        owner_id=identity.owner_id,
-        filename=CHAT_SESSION_FILENAME,
-        content_type=CHAT_CONTENT_TYPE,
-        original_path="",
-        created_at=now,
-        status="chat_ready",
-    )
-    prune_sessions_for_identity(identity)
-    return serialize_session_detail(session)
-
-
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str, identity: Identity = Depends(current_identity)) -> dict[str, Any]:
     identity = coerce_identity(identity)
@@ -698,505 +657,6 @@ async def bulk_delete_sessions(
         "deleted_count": deleted_count,
         "missing_ids": missing_ids,
     }
-
-
-@app.post("/sessions/upload")
-async def upload_document(
-    file: UploadFile = File(...),
-    session_id: str | None = None,
-    identity: Identity = Depends(current_identity),
-) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="Legacy OCR uploads are disabled. Use /sessions/check-image.")
-    identity = coerce_identity(identity)
-    filename = sanitize_filename(file.filename or "upload")
-    content_type = normalize_content_type(file.content_type or "", filename)
-    validate_upload(filename, content_type)
-    session_id = (session_id or "").strip() or None
-    existing_session: dict[str, Any] | None = None
-    if session_id:
-        existing_session = store.get_session(
-            session_id,
-            owner_type=identity.owner_type,
-            owner_id=identity.owner_id,
-        )
-        if existing_session is None:
-            raise HTTPException(status_code=404, detail="Session not found.")
-        if has_session_document(existing_session):
-            raise HTTPException(
-                status_code=409,
-                detail="This session already has a document. Start again to attach another file.",
-            )
-        if existing_session["status"] in {"uploading", "ocr_running", "answering"}:
-            raise HTTPException(status_code=409, detail="Session is busy.")
-
-    body = await file.read()
-    if not body:
-        raise HTTPException(status_code=400, detail="Upload is empty.")
-
-    limit_status = rate_limit_status(identity)
-    if not limit_status["unlimited"] and limit_status["remaining"] <= 0:
-        return rate_limit_exceeded_response(limit_status)
-    record_ocr_upload(identity)
-
-    session_id = session_id or uuid.uuid4().hex
-    now = utc_now()
-    suffix = Path(filename).suffix.lower()
-    original_path = artifact_owner_dir(UPLOAD_DIR, identity) / f"{session_id}{suffix}"
-    original_path.write_bytes(body)
-
-    if existing_session is None:
-        store.create_session(
-            session_id=session_id,
-            owner_type=identity.owner_type,
-            owner_id=identity.owner_id,
-            filename=filename,
-            content_type=content_type,
-            original_path=original_path,
-            created_at=now,
-        )
-        prune_sessions_for_identity(identity)
-        store.update_owned_session(
-            session_id,
-            identity.owner_type,
-            identity.owner_id,
-            utc_now(),
-            status="ocr_running",
-        )
-    else:
-        store.update_owned_session(
-            session_id,
-            identity.owner_type,
-            identity.owner_id,
-            now,
-            filename=filename,
-            content_type=content_type,
-            original_path=str(original_path),
-            status="ocr_running",
-            error=None,
-            ocr_markdown_path=None,
-            page_count=None,
-            ocr_elapsed_ms=None,
-        )
-
-    started = time.perf_counter()
-    try:
-        markdown = await asyncio.to_thread(
-            post_ocr_request,
-            filename,
-            content_type,
-            body,
-        )
-    except ServiceError as exc:
-        store.update_owned_session(
-            session_id,
-            identity.owner_type,
-            identity.owner_id,
-            utc_now(),
-            status="ocr_failed",
-            error=str(exc),
-        )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    ocr_path = artifact_owner_dir(OCR_DIR, identity) / f"{session_id}.md"
-    ocr_path.write_text(markdown, encoding="utf-8")
-    store.update_owned_session(
-        session_id,
-        identity.owner_type,
-        identity.owner_id,
-        utc_now(),
-        status="ocr_complete",
-        error=None,
-        ocr_markdown_path=str(ocr_path),
-        page_count=count_pages(markdown, content_type),
-        ocr_elapsed_ms=elapsed_ms,
-    )
-
-    session = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
-    if session is None:
-        raise HTTPException(status_code=500, detail="Session vanished after OCR.")
-    data = serialize_session_detail(session)
-    data["rate_limit"] = rate_limit_status(identity)
-    return data
-
-
-@app.post("/sessions/{session_id}/ask")
-async def ask_session(
-    session_id: str,
-    ask: AskRequest,
-    identity: Identity = Depends(current_identity),
-) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="Legacy assistant chat is disabled. Use /sessions/check.")
-    identity = coerce_identity(identity)
-    session = get_owned_session_or_404(session_id, identity)
-    if session["status"] not in ASKABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Session is not ready for chat.")
-
-    markdown = read_session_markdown(session)
-    user_prompt = ask.prompt.strip()
-    existing_messages = session.get("messages", [])
-    validate_empty_prompt_submission(
-        user_prompt=user_prompt,
-        has_ocr=bool(markdown),
-        existing_messages=existing_messages,
-    )
-    prompt = build_prompt(user_prompt, ask.mode, has_ocr=bool(markdown))
-    now = utc_now()
-    if user_prompt:
-        store.add_message(session_id=session_id, role="user", content=user_prompt, created_at=now)
-    store.update_owned_session(
-        session_id,
-        identity.owner_type,
-        identity.owner_id,
-        now,
-        status="answering",
-    )
-
-    started = time.perf_counter()
-    try:
-        answer = await asyncio.to_thread(
-            post_answer_request,
-            markdown,
-            prompt,
-            message_history_for_llm(existing_messages),
-            ask.thinking_mode,
-        )
-    except ServiceError as exc:
-        store.update_owned_session(
-            session_id,
-            identity.owner_type,
-            identity.owner_id,
-            utc_now(),
-            status="llm_failed",
-            error=str(exc),
-        )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    answer_text = str(answer.get("answer") or "").strip()
-    answer_text = append_max_tokens_notice_if_needed(
-        answer_text,
-        stopped_due_to_max_tokens=bool(answer.get("stopped_due_to_max_tokens")),
-        max_tokens_limit=as_int_or_none(answer.get("max_tokens_limit")),
-    )
-    store.add_message(
-        session_id=session_id,
-        role="assistant",
-        content=answer_text,
-        elapsed_ms=answer.get("elapsed_ms", elapsed_ms),
-        prompt_tokens=answer.get("prompt_tokens"),
-        completion_tokens=answer.get("completion_tokens"),
-        total_tokens=answer.get("total_tokens"),
-        created_at=utc_now(),
-    )
-    store.update_owned_session(
-        session_id,
-        identity.owner_type,
-        identity.owner_id,
-        utc_now(),
-        status="answered",
-        error=None,
-        answer_elapsed_ms=elapsed_ms,
-    )
-
-    updated = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Session vanished after answer.")
-    return serialize_session_detail(updated)
-
-
-@app.post("/sessions/{session_id}/ask/stream")
-async def ask_session_stream(
-    session_id: str,
-    ask: AskRequest,
-    identity: Identity = Depends(current_identity),
-) -> StreamingResponse:
-    raise HTTPException(status_code=410, detail="Legacy assistant chat is disabled. Use /sessions/check.")
-    identity = coerce_identity(identity)
-    session = get_owned_session_or_404(session_id, identity)
-    if session["status"] not in ASKABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Session is not ready for chat.")
-
-    markdown = read_session_markdown(session)
-    user_prompt = ask.prompt.strip()
-    existing_messages = session.get("messages", [])
-    validate_empty_prompt_submission(
-        user_prompt=user_prompt,
-        has_ocr=bool(markdown),
-        existing_messages=existing_messages,
-    )
-    prompt = build_prompt(user_prompt, ask.mode, has_ocr=bool(markdown))
-    now = utc_now()
-    history = message_history_for_llm(existing_messages)
-    if user_prompt:
-        store.add_message(session_id=session_id, role="user", content=user_prompt, created_at=now)
-    store.update_owned_session(
-        session_id,
-        identity.owner_type,
-        identity.owner_id,
-        now,
-        status="answering",
-    )
-
-    def stream_events() -> Generator[str, None, None]:
-        started = time.perf_counter()
-        answer_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        final_meta: dict[str, Any] = {}
-        try:
-            for event in post_answer_request_stream(markdown, prompt, history, ask.thinking_mode):
-                event_name = str(event.get("event") or "")
-                data = event.get("data")
-                if not isinstance(data, dict):
-                    data = {}
-                if event_name == "token":
-                    delta = str(data.get("delta") or "")
-                    if not delta:
-                        continue
-                    kind = str(data.get("kind") or "answer")
-                    if kind == "reasoning":
-                        reasoning_parts.append(delta)
-                    else:
-                        answer_parts.append(delta)
-                    yield sse_event("token", {"delta": delta, "kind": kind})
-                    continue
-                if event_name == "done":
-                    final_meta = data
-                    break
-                if event_name == "error":
-                    detail = str(data.get("detail") or "LLM service failed.")
-                    raise ServiceError(detail)
-        except ServiceError as exc:
-            store.update_owned_session(
-                session_id,
-                identity.owner_type,
-                identity.owner_id,
-                utc_now(),
-                status="llm_failed",
-                error=str(exc),
-            )
-            yield sse_event("error", {"detail": str(exc)})
-            return
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            detail = f"LLM service failed: {exc}"
-            store.update_owned_session(
-                session_id,
-                identity.owner_type,
-                identity.owner_id,
-                utc_now(),
-                status="llm_failed",
-                error=detail,
-            )
-            yield sse_event("error", {"detail": detail})
-            return
-
-        answer_text = str(final_meta.get("answer") or "").strip()
-        if not answer_text:
-            answer_text = "".join(answer_parts).strip()
-        if not answer_text:
-            detail = "LLM service returned an empty answer."
-            store.update_owned_session(
-                session_id,
-                identity.owner_type,
-                identity.owner_id,
-                utc_now(),
-                status="llm_failed",
-                error=detail,
-            )
-            yield sse_event("error", {"detail": detail})
-            return
-        answer_text = append_max_tokens_notice_if_needed(
-            answer_text,
-            stopped_due_to_max_tokens=bool(final_meta.get("stopped_due_to_max_tokens")),
-            max_tokens_limit=as_int_or_none(final_meta.get("max_tokens_limit")),
-        )
-
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        answer_elapsed_ms = as_int(final_meta.get("elapsed_ms"), fallback=elapsed_ms)
-        prompt_tokens = as_int_or_none(final_meta.get("prompt_tokens"))
-        completion_tokens = as_int_or_none(final_meta.get("completion_tokens"))
-        total_tokens = as_int_or_none(final_meta.get("total_tokens"))
-
-        store.add_message(
-            session_id=session_id,
-            role="assistant",
-            content=answer_text,
-            elapsed_ms=answer_elapsed_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            created_at=utc_now(),
-        )
-        store.update_owned_session(
-            session_id,
-            identity.owner_type,
-            identity.owner_id,
-            utc_now(),
-            status="answered",
-            error=None,
-            answer_elapsed_ms=elapsed_ms,
-        )
-        updated = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
-        if updated is None:
-            detail = "Session vanished after answer."
-            yield sse_event("error", {"detail": detail})
-            return
-
-        payload = {
-            "answer": answer_text,
-            "reasoning_text": str(final_meta.get("reasoning_text") or "").strip()
-            or "".join(reasoning_parts).strip()
-            or None,
-            "elapsed_ms": answer_elapsed_ms,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "stopped_due_to_max_tokens": bool(final_meta.get("stopped_due_to_max_tokens")),
-            "max_tokens_limit": as_int_or_none(final_meta.get("max_tokens_limit")),
-            "session": serialize_session_detail(updated),
-        }
-        yield sse_event("done", payload)
-
-    return StreamingResponse(
-        stream_events(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-class ServiceError(RuntimeError):
-    pass
-
-
-def post_ocr_request(filename: str, content_type: str, body: bytes) -> str:
-    boundary = f"----ocr-web-app-{uuid.uuid4().hex}"
-    payload = build_multipart_file_body(
-        field_name="image",
-        filename=filename,
-        content_type=content_type,
-        body=body,
-        boundary=boundary,
-    )
-    req = request.Request(
-        f"{OCR_SERVICE_URL.rstrip('/')}/v1/ocr",
-        data=payload,
-        method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-    try:
-        with request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return response.read().decode("utf-8")
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ServiceError(f"OCR service failed: {detail}") from exc
-    except error.URLError as exc:
-        raise ServiceError(f"OCR service is unavailable: {exc.reason}") from exc
-
-
-def post_answer_request(
-    markdown: str,
-    prompt: str,
-    conversation_history: list[dict[str, str]] | None = None,
-    thinking_mode: Literal["fast", "thinking"] = "fast",
-) -> dict[str, Any]:
-    request_body: dict[str, Any] = {
-        "ocr_markdown": markdown,
-        "user_request": prompt,
-        "thinking_mode": thinking_mode,
-    }
-    if conversation_history:
-        request_body["conversation_history"] = conversation_history
-    payload = json.dumps(request_body).encode("utf-8")
-    req = request.Request(
-        f"{LLM_SERVICE_URL.rstrip('/')}/v1/answer",
-        data=payload,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ServiceError(f"LLM service failed: {detail}") from exc
-    except error.URLError as exc:
-        raise ServiceError(f"LLM service is unavailable: {exc.reason}") from exc
-
-
-def post_answer_request_stream(
-    markdown: str,
-    prompt: str,
-    conversation_history: list[dict[str, str]] | None = None,
-    thinking_mode: Literal["fast", "thinking"] = "fast",
-) -> Generator[dict[str, Any], None, None]:
-    request_body: dict[str, Any] = {
-        "ocr_markdown": markdown,
-        "user_request": prompt,
-        "thinking_mode": thinking_mode,
-    }
-    if conversation_history:
-        request_body["conversation_history"] = conversation_history
-    payload = json.dumps(request_body).encode("utf-8")
-    req = request.Request(
-        f"{LLM_SERVICE_URL.rstrip('/')}/v1/answer/stream",
-        data=payload,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        },
-    )
-    try:
-        with request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            for frame in iter_sse_frames(response):
-                event_name = str(frame.get("event") or "").strip() or "message"
-                data_blob = frame.get("data")
-                if not isinstance(data_blob, str) or not data_blob:
-                    continue
-                try:
-                    decoded = json.loads(data_blob)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(decoded, dict):
-                    continue
-                yield {"event": event_name, "data": decoded}
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ServiceError(f"LLM service failed: {detail}") from exc
-    except error.URLError as exc:
-        raise ServiceError(f"LLM service is unavailable: {exc.reason}") from exc
-
-
-def iter_sse_frames(response: Any) -> Generator[dict[str, str], None, None]:
-    event_name = "message"
-    data_lines: list[str] = []
-    for raw_line in response:
-        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-        if not line:
-            if data_lines:
-                yield {"event": event_name, "data": "\n".join(data_lines)}
-            event_name = "message"
-            data_lines = []
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[6:].strip() or "message"
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[5:].lstrip())
-    if data_lines:
-        yield {"event": event_name, "data": "\n".join(data_lines)}
-
-
-def sse_event(event_name: str, payload: dict[str, Any]) -> str:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event_name}\ndata: {body}\n\n"
-
-
 def as_int_or_none(value: Any) -> int | None:
     if value is None:
         return None
@@ -1211,62 +671,8 @@ def as_int(value: Any, *, fallback: int) -> int:
     return parsed if parsed is not None else fallback
 
 
-def append_max_tokens_notice_if_needed(
-    answer_text: str,
-    *,
-    stopped_due_to_max_tokens: bool,
-    max_tokens_limit: int | None,
-) -> str:
-    text = str(answer_text or "").strip()
-    if not stopped_due_to_max_tokens:
-        return text
-    if max_tokens_limit is not None and max_tokens_limit > 0:
-        notice = f"Sorry, answer exceeds max tokens ({max_tokens_limit})."
-    else:
-        notice = "Sorry, answer exceeds max tokens."
-    if notice in text:
-        return text
-    if not text:
-        return notice
-    return f"{text}\n\n{notice}"
-
-
-def message_history_for_llm(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
-    history: list[dict[str, str]] = []
-    for message in messages:
-        role = str(message.get("role") or "").strip()
-        content = str(message.get("content") or "").strip()
-        if role not in {"user", "assistant"} or not content:
-            continue
-        history.append({"role": role, "content": content})
-    return history
-
-
-def build_multipart_file_body(
-    *,
-    field_name: str,
-    filename: str,
-    content_type: str,
-    body: bytes,
-    boundary: str,
-) -> bytes:
-    header = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
-        f"Content-Type: {content_type}\r\n\r\n"
-    ).encode("utf-8")
-    footer = f"\r\n--{boundary}--\r\n".encode("utf-8")
-    return header + body + footer
-
-
 def serialize_session_detail(session: dict[str, Any]) -> dict[str, Any]:
     data = serialize_session_summary(session)
-    data["ocr_markdown"] = ""
-    if session.get("ocr_markdown_path"):
-        path = Path(session["ocr_markdown_path"])
-        if path.exists():
-            data["ocr_markdown"] = path.read_text(encoding="utf-8")
-    data["messages"] = session.get("messages", [])
     runs = session.get("fact_check_runs", [])
     data["fact_check_runs"] = [serialize_fact_check_run(run, include_result=False) for run in runs]
     data["fact_check_result"] = read_fact_check_result(runs[0]) if runs else None
@@ -1287,10 +693,8 @@ def serialize_session_summary(session: dict[str, Any]) -> dict[str, Any]:
         "status": session["status"],
         "error": session.get("error"),
         "overall_verdict": latest_run.get("overall_verdict") if latest_run else None,
-        "page_count": session.get("page_count"),
         "created_at": session["created_at"],
         "updated_at": session["updated_at"],
-        "ocr_elapsed_ms": session.get("ocr_elapsed_ms"),
         "answer_elapsed_ms": session.get("answer_elapsed_ms"),
         "thumbnail_url": f"/sessions/{session['id']}/original"
         if has_document and str(session["content_type"]).startswith("image/")
@@ -1341,19 +745,6 @@ def read_fact_check_result(run: dict[str, Any] | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return loaded if isinstance(loaded, dict) else None
-
-
-def read_session_markdown(session: dict[str, Any]) -> str:
-    path_value = session.get("ocr_markdown_path")
-    if not path_value:
-        return ""
-    path = Path(path_value)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="OCR Markdown file not found.")
-    markdown = path.read_text(encoding="utf-8").strip()
-    if not markdown:
-        return ""
-    return markdown
 
 
 def normalize_check_text(value: str) -> str:
@@ -1435,55 +826,6 @@ def claim_rows_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_empty_prompt_submission(
-    *,
-    user_prompt: str,
-    has_ocr: bool,
-    existing_messages: list[dict[str, Any]],
-) -> None:
-    if user_prompt:
-        return
-    if not has_ocr:
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty without OCR context.")
-    if existing_messages:
-        raise HTTPException(status_code=400, detail="Empty prompt is only allowed at the start of a session.")
-
-
-def build_prompt(prompt: str, mode: str | None, *, has_ocr: bool = True) -> str:
-    cleaned = prompt.strip()
-    if not cleaned:
-        if has_ocr:
-            return "Answer the question(s) contained in the OCR text."
-        return "No question was provided. Ask the user to provide a question."
-    if mode == "answer":
-        if cleaned.lower() in {"answer this question", "answer the question(s)"}:
-            if not has_ocr:
-                return "Answer the question(s). If the question is missing, ask for it briefly."
-            return "Answer the question(s) contained in the OCR text."
-        if not has_ocr:
-            return f"Answer the question(s): {cleaned}"
-        return f"Answer the question(s) from the OCR text: {cleaned}"
-    if mode and mode.startswith("translate:"):
-        language = mode.split(":", 1)[1].strip() or "Vietnamese"
-        if cleaned.lower() == f"translate to {language.lower()}":
-            if not has_ocr:
-                return f"Translate to {language}. If the text is missing, ask for it briefly."
-            return f"Translate the OCR text to {language}."
-        if not has_ocr:
-            return f"Translate to {language}: {cleaned}"
-        return f"Translate to {language} using the OCR text: {cleaned}"
-    return cleaned
-
-
-def validate_upload(filename: str, content_type: str) -> None:
-    suffix = Path(filename).suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS or content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="Only PNG, JPG, JPEG, and PDF uploads are supported.",
-        )
-
-
 def validate_image_upload(filename: str, content_type: str) -> None:
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_IMAGE_EXTENSIONS or content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
@@ -1495,17 +837,10 @@ def validate_image_upload(filename: str, content_type: str) -> None:
 
 def normalize_content_type(content_type: str, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
-    guessed = mimetypes.types_map.get(suffix, "")
-    if content_type in ALLOWED_CONTENT_TYPES:
-        return content_type
-    if guessed in ALLOWED_CONTENT_TYPES:
-        return guessed
     if suffix in {".jpg", ".jpeg"}:
         return "image/jpeg"
     if suffix == ".png":
         return "image/png"
-    if suffix == ".pdf":
-        return "application/pdf"
     return content_type or "application/octet-stream"
 
 
@@ -1516,16 +851,7 @@ def sanitize_filename(filename: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ -]", "_", cleaned)[:160]
 
 
-def count_pages(markdown: str, content_type: str) -> int:
-    if content_type != "application/pdf":
-        return 1
-    page_markers = re.findall(r"(?m)^##\s+Page\s+\d+", markdown)
-    return max(len(page_markers), 1)
-
-
 def file_type_label(filename: str, content_type: str) -> str:
-    if content_type == CHAT_CONTENT_TYPE:
-        return "CHAT"
     if content_type == FACT_CHECK_CONTENT_TYPE:
         return "CHECK"
     suffix = Path(filename).suffix.lower().lstrip(".")
@@ -1733,7 +1059,7 @@ def static_asset_version() -> str:
 
 
 def delete_session_artifacts(session: dict[str, Any]) -> None:
-    for path_value in (session.get("original_path"), session.get("ocr_markdown_path")):
+    for path_value in (session.get("original_path"),):
         if path_value:
             path = Path(path_value)
             if path.is_absolute() or path.parent != Path("."):
@@ -1760,10 +1086,7 @@ def prune_sessions_for_identity(identity: Identity) -> None:
 
 def has_session_document(session: dict[str, Any]) -> bool:
     original_path = str(session.get("original_path") or "").strip()
-    return bool(original_path) and session.get("content_type") not in {
-        CHAT_CONTENT_TYPE,
-        FACT_CHECK_CONTENT_TYPE,
-    }
+    return bool(original_path) and str(session.get("content_type") or "").startswith("image/")
 
 
 def identity_from_user(user: dict[str, Any]) -> Identity:
@@ -1906,7 +1229,7 @@ def sanitize_path_segment(value: str) -> str:
 
 
 def rate_limit_status(identity: Identity) -> dict[str, Any]:
-    limit = OCR_UPLOAD_LIMITS.get(identity.tier)
+    limit = FACT_CHECK_LIMITS.get(identity.tier)
     now_dt = datetime.now(timezone.utc)
     since_dt = now_dt - timedelta(hours=1)
     if limit is None:
@@ -1945,12 +1268,8 @@ def rate_limit_status(identity: Identity) -> dict[str, Any]:
     }
 
 
-def record_ocr_upload(identity: Identity) -> None:
-    record_fact_check(identity)
-
-
 def record_fact_check(identity: Identity) -> None:
-    if OCR_UPLOAD_LIMITS.get(identity.tier) is None:
+    if FACT_CHECK_LIMITS.get(identity.tier) is None:
         return
     now_dt = datetime.now(timezone.utc)
     store.prune_rate_limit_events((now_dt - timedelta(hours=24)).isoformat())

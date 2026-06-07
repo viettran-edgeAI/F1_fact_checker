@@ -802,39 +802,6 @@ class SessionStore:
                 values,
             )
 
-    def add_message(
-        self,
-        *,
-        session_id: str,
-        role: str,
-        content: str,
-        created_at: str,
-        elapsed_ms: int | None = None,
-        prompt_tokens: int | None = None,
-        completion_tokens: int | None = None,
-        total_tokens: int | None = None,
-    ) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO messages (
-                    session_id, role, content, elapsed_ms, prompt_tokens,
-                    completion_tokens, total_tokens, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    role,
-                    content,
-                    elapsed_ms,
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                    created_at,
-                ),
-            )
-
     def rename_session(self, session_id: str, filename: str, updated_at: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -870,7 +837,6 @@ class SessionStore:
         if session is None:
             return None
         with self.connect() as connection:
-            connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             run_rows = connection.execute(
                 "SELECT id FROM fact_check_runs WHERE session_id = ?",
                 (session_id,),
@@ -905,16 +871,6 @@ class SessionStore:
             ).fetchone()
             if row is None:
                 return None
-            messages = connection.execute(
-                """
-                SELECT role, content, elapsed_ms, prompt_tokens, completion_tokens,
-                       total_tokens, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY created_at ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
             runs = connection.execute(
                 """
                 SELECT *
@@ -940,7 +896,6 @@ class SessionStore:
                 run_dict["claims"] = [dict(claim) for claim in claims]
                 run_payloads.append(run_dict)
         session = dict(row)
-        session["messages"] = [dict(message) for message in messages]
         session["fact_check_runs"] = run_payloads
         return session
 
@@ -996,7 +951,6 @@ class SessionStore:
             pruned = [dict(row) for row in rows]
             for row in rows:
                 session_id = str(row["id"])
-                connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
                 run_rows = connection.execute(
                     "SELECT id FROM fact_check_runs WHERE session_id = ?",
                     (session_id,),

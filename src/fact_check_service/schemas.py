@@ -23,6 +23,11 @@ class EvidenceSourceType(str, Enum):
     WEB = "web"
 
 
+class F1RelevanceLabel(str, Enum):
+    F1_RELATED = "f1_related"
+    NOT_F1_RELATED = "not_f1_related"
+
+
 class FactSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=8, ge=1, le=50)
@@ -46,6 +51,12 @@ class TextCheckRequest(BaseModel):
     )
     include_evidence: bool = True
     meta: dict[str, object] = Field(default_factory=dict)
+
+
+class F1RelevanceResult(BaseModel):
+    label: F1RelevanceLabel
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason: str = ""
 
 
 class ExtractedClaim(BaseModel):

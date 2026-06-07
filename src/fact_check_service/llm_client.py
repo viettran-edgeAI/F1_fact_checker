@@ -9,7 +9,7 @@ import httpx
 from pydantic import ValidationError
 
 from .config import FactCheckConfig
-from .schemas import ClassifiedClaim, ExtractedClaim, VerificationStream
+from .schemas import ClassifiedClaim, ExtractedClaim, F1RelevanceLabel, F1RelevanceResult, VerificationStream
 
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
@@ -23,6 +23,19 @@ class LLMClient:
     def __init__(self, config: FactCheckConfig | None = None, client: httpx.Client | None = None) -> None:
         self.config = config or FactCheckConfig.from_env()
         self.client = client
+
+    def classify_f1_relevance(self, text: str) -> F1RelevanceResult:
+        payload = self._run_json_prompt("f1_relevance_classification.md", {"input_text": text})
+        label = str(payload.get("label") or "").strip().lower()
+        try:
+            relevance = F1RelevanceLabel(label)
+        except ValueError:
+            relevance = F1RelevanceLabel.NOT_F1_RELATED
+        return F1RelevanceResult(
+            label=relevance,
+            confidence=_float_or_none(payload.get("confidence")),
+            reason=str(payload.get("reason") or ""),
+        )
 
     def extract_claims(self, text: str, *, max_claims: int = 8) -> list[ExtractedClaim]:
         payload = self._run_json_prompt("claim_extraction.md", {"input_text": text})

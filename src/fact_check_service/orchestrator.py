@@ -16,6 +16,8 @@ from .schemas import (
     ClassifiedClaim,
     EvidenceItem,
     EvidenceSourceType,
+    F1RelevanceLabel,
+    F1RelevanceResult,
     FinalCheckResponse,
     TextCheckRequest,
     VerdictLabel,
@@ -48,9 +50,33 @@ class FactCheckOrchestrator:
         timings: dict[str, int] = {}
         warnings: list[str] = []
 
+        relevance_started = time.perf_counter()
+        relevance = self.llm_client.classify_f1_relevance(request.text)
+        timings["f1_relevance_classification"] = _elapsed_ms(relevance_started)
+        if relevance.label == F1RelevanceLabel.NOT_F1_RELATED:
+            timings["total"] = _elapsed_ms(started)
+            return _early_response(
+                request.text,
+                reason="not_f1_related",
+                summary="This content is not related to Formula 1. No fact-check was performed.",
+                timings=timings,
+                relevance=relevance,
+                warnings=warnings,
+            )
+
         extract_started = time.perf_counter()
         extracted_claims = self.llm_client.extract_claims(request.text, max_claims=request.max_claims)
         timings["claim_extraction"] = _elapsed_ms(extract_started)
+        if not extracted_claims:
+            timings["total"] = _elapsed_ms(started)
+            return _early_response(
+                request.text,
+                reason="no_checkable_claims",
+                summary="F1-related content found, but no checkable claim detected.",
+                timings=timings,
+                relevance=relevance,
+                warnings=warnings,
+            )
 
         classified_claims: list[ClassifiedClaim] = []
         verdicts: list[ClaimVerdict] = []
@@ -90,6 +116,7 @@ class FactCheckOrchestrator:
                 "input_type": "text",
                 "warnings": warnings,
                 "timings_ms": timings,
+                "f1_relevance": relevance.model_dump(mode="json"),
             },
         )
 
@@ -166,6 +193,32 @@ def _default_structured_retriever(claim: ClassifiedClaim, limit: int) -> list[di
             "verification_stream": "structured",
         },
         limit=limit,
+    )
+
+
+def _early_response(
+    text: str,
+    *,
+    reason: str,
+    summary: str,
+    timings: dict[str, int],
+    relevance: F1RelevanceResult,
+    warnings: list[str],
+) -> FinalCheckResponse:
+    return FinalCheckResponse(
+        text=text,
+        verdict=VerdictLabel.NOT_ENOUGH_INFO,
+        claims=[],
+        summary=summary,
+        unsupported_claims=[],
+        meta={
+            "run_id": f"run_{uuid.uuid4().hex}",
+            "input_type": "text",
+            "reason": reason,
+            "warnings": warnings,
+            "timings_ms": timings,
+            "f1_relevance": relevance.model_dump(mode="json"),
+        },
     )
 
 

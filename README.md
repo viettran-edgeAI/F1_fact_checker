@@ -25,8 +25,18 @@ Input: text / URL / screenshot
 ↓
 Preprocess input
 ↓
+Gemma classifies whether the content is F1-related
+├── Not F1 related
+│   └── Return: This content is not related to Formula 1. No fact-check was performed.
+│
+└── F1 related
+    ↓
 Gemma extracts checkable claims
-↓
+├── No checkable claims
+│   └── Return: F1-related content found, but no checkable claim detected.
+│
+└── Checkable claims found
+    ↓
 Gemma classifies each claim
 ├── Structured factual claim
 │   └── Verify with local Knowledge Database: SQLite + FAISS

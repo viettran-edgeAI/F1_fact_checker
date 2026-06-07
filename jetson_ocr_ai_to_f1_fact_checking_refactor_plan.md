@@ -1806,7 +1806,21 @@ fact-check-service preprocesses input
     ├── url: fetch + extract main article
     └── image: call ocr-service for plain text
 ↓
-fact-check-service calls llm-service to extract claims
+fact-check-service cleans text
+    └── remove noise, boilerplate, and OCR artifacts
+↓
+fact-check-service calls llm-service for F1 relevance classification
+├── not F1 related:
+│   └── return early:
+│       "This content is not related to Formula 1. No fact-check was performed."
+│
+└── F1 related:
+    ↓
+    fact-check-service calls llm-service to extract checkable claims
+    ↓
+    if no checkable claims:
+        return:
+        "F1-related content found, but no checkable claim detected."
 ↓
 fact-check-service calls llm-service to classify claims
 ├── structured factual claims:

@@ -353,26 +353,42 @@ Suggested URL extraction result:
 After preprocessing, all input types should follow the same verification flow.
 
 ```text
-Input: text / screenshot / URL
+User input
 ↓
-Preprocess input into clean text
+Input type?
+├── Text → Normalize text
+├── Image / Screenshot → OCR service with PP-OCRv5 det + rec → Normalize text
+└── URL → URL fetch / article extraction or Brave-assisted fetch → Normalize text
 ↓
-Gemma 4 E2B extracts checkable claims
+Clean text: remove noise, boilerplate, OCR artifacts
 ↓
-Gemma 4 E2B classifies each claim
-├── Structured factual claim
-│   └── Verify with local Knowledge Database: SQLite + FAISS
+Gemma: F1 relevance classification
+├── Not F1 related
+│   └── Return early response:
+│       "This content is not related to Formula 1. No fact-check was performed."
 │
-└── News / drama / statement claim
-    └── Verify with Brave Search API + web evidence
-↓
-Gemma returns claim-level verdict:
-- SUPPORTS
-- REFUTES
-- NOT_ENOUGH_INFO
-- explanation
-↓
-Aggregate claim-level results into a final input-level verdict
+└── F1 related
+    ↓
+    Gemma: extract checkable claims
+    ↓
+    Any checkable claims?
+    ├── No
+    │   └── Return:
+    │       "F1-related content found, but no checkable claim detected."
+    │
+    └── Yes
+        ↓
+        Gemma: classify each claim
+        ↓
+        Claim route?
+        ├── Structured F1 fact → Local Knowledge DB: SQLite + FAISS
+        └── News / statement / rumor / drama → Internet Search: Brave Search API
+        ↓
+        Evidence items
+        ↓
+        Gemma: verdict generation
+        ↓
+        Final fact-check result
 ```
 
 For a long article:

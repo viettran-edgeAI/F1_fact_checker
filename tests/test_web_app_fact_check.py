@@ -5,8 +5,6 @@ import importlib
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -129,11 +127,11 @@ def test_recent_sessions_filters_to_fact_checks(tmp_path, monkeypatch):
         session_id="legacy-chat",
         owner_type="guest",
         owner_id="guest-test",
-        filename="Untitled chat",
-        content_type=main.CHAT_CONTENT_TYPE,
+        filename="legacy",
+        content_type="application/x-legacy-session",
         original_path="",
         created_at=now,
-        status="chat_ready",
+        status="completed",
     )
     main.store.create_session(
         session_id="fact-check",
@@ -154,23 +152,14 @@ def test_recent_sessions_filters_to_fact_checks(tmp_path, monkeypatch):
     assert [session["id"] for session in payload["sessions"]] == ["fact-check"]
 
 
-def test_legacy_ocr_and_chat_routes_are_disabled(tmp_path, monkeypatch):
+def test_legacy_ocr_and_chat_routes_are_removed(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_APP_DATA_DIR", str(tmp_path / "web_app"))
     monkeypatch.setenv("WEB_APP_SECRET_KEY", "dev-insecure-change-me")
     main = importlib.import_module("web_app.main")
     main = importlib.reload(main)
-    identity = main.Identity(owner_type="guest", owner_id="guest-test", tier="guest")
+    route_paths = {route.path for route in main.app.routes}
 
-    with pytest.raises(main.HTTPException) as chat_exc:
-        asyncio.run(main.create_chat_session(identity=identity))
-    assert chat_exc.value.status_code == 410
-
-    with pytest.raises(main.HTTPException) as ask_exc:
-        asyncio.run(
-            main.ask_session(
-                "missing",
-                main.AskRequest(prompt="test"),
-                identity=identity,
-            )
-        )
-    assert ask_exc.value.status_code == 410
+    assert "/sessions/chat" not in route_paths
+    assert "/sessions/upload" not in route_paths
+    assert "/sessions/{session_id}/ask" not in route_paths
+    assert "/sessions/{session_id}/ask/stream" not in route_paths
