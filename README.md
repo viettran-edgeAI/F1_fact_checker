@@ -11,7 +11,7 @@ The repository is organized around four runtime services:
 
 ## Quick Start
 
-1. Read the project overview: [docs/project_overview.md](docs/project_overview.md)
+1. Read the directory structure doc: [docs/project_directory_structure.md](docs/project_directory_structure.md)
 2. Read the service docs for the blocks you care about:
    - [OCR service](docs/ocr_service.md)
    - [LLM service](docs/llm_service.md)
