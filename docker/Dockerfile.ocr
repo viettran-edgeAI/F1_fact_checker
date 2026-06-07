@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONPATH=/app/src \
     OCR_PROFILE=fast \
     OCR_ENGINE=paddle_static \
-    OCR_USE_DOCUMENT_STRUCTURE=1 \
+    OCR_USE_DOCUMENT_STRUCTURE=0 \
     OCR_TEXT_RECOGNITION_BATCH_SIZE=4 \
     OCR_DATA_DIR=/app/data
 
@@ -44,7 +44,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
 COPY src /app/src
 COPY README.md /app/README.md
 
-RUN mkdir -p /app/data/uploads /app/data/results
+RUN mkdir -p /app/data/uploads /app/data/ocr_text
 
 EXPOSE 8000
 

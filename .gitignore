@@ -11,6 +11,12 @@ models/llm/
 # models/**/.cache/
 data/
 wheels/
-tests/
+tests/*
+!tests/test_f1_knowledge_database.py
+!tests/test_ocr_service_api.py
 test_set/
-scripts/
+scripts/*
+!scripts/build_f1_database.py
+!scripts/sync_jolpica.py
+!scripts/inspect_fact.py
+!scripts/smoke_ocr_service.py

@@ -5,4 +5,3 @@ paddleocr==3.5.0
 paddlex[ocr]==3.5.2
 pillow==12.2.0
 numpy==2.2.6
-pypdfium2==4.30.0

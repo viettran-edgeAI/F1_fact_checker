@@ -1,0 +1,21 @@
+FROM python:3.10-slim
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    FACT_CHECK_PORT=8082
+
+WORKDIR /app
+
+COPY requirements/fact_check.txt /app/requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install -r /app/requirements.txt
+
+COPY src /app/src
+
+RUN mkdir -p /data/fact_check/requests /data/fact_check/results /data/fact_check/sessions /data/knowledge_db
+
+EXPOSE 8082
+
+CMD ["python", "-m", "fact_check_service.main"]

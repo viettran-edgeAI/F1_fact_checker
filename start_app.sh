@@ -34,10 +34,12 @@ compute_sha256() {
 
 dependency_input_files() {
   local -a files=(
-    "docker/Dockerfile"
+    "docker/Dockerfile.ocr"
+    "docker/Dockerfile.fact_check"
     "docker/Dockerfile.llm"
     "docker/Dockerfile.web"
     "requirements/ocr.txt"
+    "requirements/fact_check.txt"
     "requirements/llm.txt"
     "requirements/web.txt"
   )
@@ -171,7 +173,7 @@ cleanup_failed_startup() {
 report_failure_and_cleanup() {
   warn "$1"
   docker compose "${COMPOSE_ARGS[@]}" ps -a || true
-  docker compose "${COMPOSE_ARGS[@]}" logs --no-color --tail=160 llm ocr web-app || true
+  docker compose "${COMPOSE_ARGS[@]}" logs --no-color --tail=160 llm-service ocr-service fact-check-service web-app || true
   cleanup_failed_startup
   exit 1
 }
@@ -246,17 +248,17 @@ fi
 if (( BUILD_IMAGES == 1 )); then
   if (( REBUILD_DEPS == 1 )); then
     export DEPS_CACHE_BUSTER="$(date +%s)"
-    log "Starting OCR stack with Docker Compose (dependency rebuild enabled)..."
+    log "Starting F1 fact-check stack with Docker Compose (dependency rebuild enabled)..."
   else
     unset DEPS_CACHE_BUSTER || true
-    log "Starting OCR stack with Docker Compose (image rebuild enabled)..."
+    log "Starting F1 fact-check stack with Docker Compose (image rebuild enabled)..."
   fi
   if ! docker compose "${COMPOSE_ARGS[@]}" up -d --build; then
     report_failure_and_cleanup "Compose startup failed."
   fi
 else
   unset DEPS_CACHE_BUSTER || true
-  log "Starting OCR stack with Docker Compose (no rebuild, recreate containers)..."
+  log "Starting F1 fact-check stack with Docker Compose (no rebuild, recreate containers)..."
   if ! docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate; then
     report_failure_and_cleanup "Compose startup failed."
   fi

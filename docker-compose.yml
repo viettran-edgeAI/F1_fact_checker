@@ -13,8 +13,9 @@ services:
       - ./data:/app/data
     environment:
       WEB_APP_DATA_DIR: /app/data/web_app
-      OCR_SERVICE_URL: http://ocr:8000
-      LLM_SERVICE_URL: http://llm:8081
+      FACT_CHECK_SERVICE_URL: http://fact-check-service:8082
+      OCR_SERVICE_URL: http://ocr-service:8000
+      LLM_SERVICE_URL: http://llm-service:8081
       WEB_REQUEST_TIMEOUT_SECONDS: 360
       WEB_APP_SECRET_KEY: ${WEB_APP_SECRET_KEY:-dev-insecure-change-me}
       WEB_APP_OWNER_EMAIL: ${WEB_APP_OWNER_EMAIL:-}
@@ -26,23 +27,52 @@ services:
       WEB_APP_SMTP_FROM: ${WEB_APP_SMTP_FROM:-}
       WEB_APP_SMTP_STARTTLS: ${WEB_APP_SMTP_STARTTLS:-1}
     depends_on:
-      ocr:
+      fact-check-service:
         condition: service_healthy
-      llm:
+      ocr-service:
+        condition: service_healthy
+      llm-service:
         condition: service_healthy
 
-  ocr:
+  fact-check-service:
+    image: f1-fact-check-service:local
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.fact_check
+      args:
+        DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
+    env_file:
+      - ./configs/models.container.env
+    expose:
+      - "8082"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/data
+      - ${HOME}/models:/models:ro
+    environment:
+      OCR_SERVICE_URL: http://ocr-service:8000
+      LLM_SERVICE_URL: http://llm-service:8081
+    depends_on:
+      ocr-service:
+        condition: service_healthy
+      llm-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  ocr-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ocr
       args:
         DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
     runtime: nvidia
     env_file:
       - ./configs/models.container.env
-    depends_on:
-      llm:
-        condition: service_healthy
     expose:
       - "8000"
     volumes:
@@ -54,7 +84,13 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       OCR_PROFILE: fast
       OCR_ENGINE: paddle_static
-      OCR_USE_DOCUMENT_STRUCTURE: "1"
+      OCR_USE_DOCUMENT_STRUCTURE: "0"
+      OCR_USE_DOC_ORIENTATION_CLASSIFY: "0"
+      OCR_USE_DOC_UNWARPING: "0"
+      OCR_USE_TEXTLINE_ORIENTATION: "0"
+      OCR_USE_LAYOUT_DETECTION: "0"
+      OCR_USE_REGION_DETECTION: "0"
+      OCR_USE_FORMULA_RECOGNITION: "0"
       OCR_TEXT_RECOGNITION_BATCH_SIZE: 4
       OCR_DATA_DIR: /app/data
       OCR_DEVICE: gpu:0
@@ -67,7 +103,7 @@ services:
       start_period: 240s
       retries: 5
 
-  llm:
+  llm-service:
     image: jetson-ocr-llm:local
     build:
       context: .

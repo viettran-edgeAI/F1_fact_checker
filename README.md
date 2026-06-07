@@ -1,47 +1,26 @@
-<h1 align="center">OCR AI Assistant</h1>
+# F1 Fact Checker
 
-<p align="center">
-  <strong>Fast local OCR, quick question answering, and multilingual translation on Jetson Orin Nano Super.</strong>
-</p>
+Local Formula 1 news fact-checking system for Jetson Orin Nano Super.
 
-<p align="center">
-  <a href="https://jetsonocrai.cc"><strong>jetsonocrai.cc</strong></a>
-</p>
+This repository is being refactored from a completed OCR AI assistant into an F1 fact-checking stack. The retained foundation includes Docker Compose wiring, a private OCR service, a private LLM service, local model mounts, runtime data storage, and the public web-app shell.
 
-<p align="center">
-  <img src="./docs/ocr_ai_demo.gif" alt="OCR AI Assistant demo" width="960" />
-</p>
+## Target Architecture
 
-## Overview
+- `web-app`: public browser UI and session layer.
+- `fact-check-service`: central orchestration service for text, URL, and image inputs.
+- `ocr-service`: private image-to-text backend for screenshots only.
+- `llm-service`: private Gemma/llama wrapper for claim extraction and verdict generation.
 
-OCR AI Assistant is a lightweight local OCR + LLM application built for fast document reading tasks. It extracts text from images and documents, helps answer short questions or multiple-choice quizzes, and translates OCR results across languages.
+## Current Refactor Status
 
-## Best For
+Step 1 is in progress/completed for the backend foundation:
 
-- Screenshots, notes, exercises, and scanned pages.
-- Short OCR tasks that need immediate answers.
-- Translating extracted text between languages.
-- Reading documents that mix normal text and formulas.
+- OCR service now exposes image-only plain-text extraction at `POST /v1/ocr`.
+- Old OCR AI service docs have been moved to `docs/archive/jetson_ocr_ai/`.
+- Initial `fact-check-service` scaffold and knowledge DB folders have been added.
+- Active model config now keeps OCR detection/recognition, LLM, and embedding paths only.
 
-## Limitations
-
-This project is optimized for quick and simple OCR workflows. Very large PDFs, dense academic papers, complex layouts, low-quality scans, or heavily formatted documents may require more processing time and can produce less accurate results.
-
-## Architecture
-
-<p align="center">
-  <img src="./docs/ocr_ai_architecture.png" alt="OCR AI Assistant architecture" width="960" />
-</p>
-
-The application is split into three main services:
-
-- **web_app** — browser interface, upload flow, sessions, and API calls.
-- **ocr-service** — OCR pipeline for text, layout, and formula extraction.
-- **llm-service** — local LLM service for answers, translation, and prompt handling.
-
-## Documentation
-
-For system design, service details, and workspace layout, see [docs/](./docs/).
+See `docs/RESTRUCTURING_PROGRESS.md` for the latest restructuring notes.
 
 ## Model Configuration
 

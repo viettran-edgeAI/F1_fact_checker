@@ -22,6 +22,7 @@ from .image_ops import (
 )
 from .models import OCRBlock, OCRFormula, OCRLine, OCRRegion, OCRResult
 from .paddle_adapter import PaddleRuntime
+from .schemas import OCRLineResponse, OCRTextResponse
 
 _SINGLE_CHAR_ALLOWED = {
     "\n",
@@ -111,10 +112,9 @@ class OCRPipeline:
         self._run_formula(image, [[32, 32, image.size[0] - 32, image.size[1] - 32]])
 
     def predict(self, image: str | Path) -> OCRResult:
-        results = self.predict_document(image)
-        if not results:
-            raise RuntimeError(f"OCR produced no results for input: {image}")
-        return results[0]
+        image_path = self._resolve_image_path(image)
+        page_image = self._load_image_rgb(image_path)
+        return self._run_page(page_image, page_index=0, source_path=image_path)
 
     def predict_many(self, images: list[str | Path]) -> list[OCRResult]:
         results: list[OCRResult] = []
@@ -123,12 +123,47 @@ class OCRPipeline:
         return results
 
     def predict_document(self, image: str | Path) -> list[OCRResult]:
-        image_path = self._resolve_image_path(image)
-        page_images = self._load_page_images(image_path)
-        results: list[OCRResult] = []
-        for page_index, page_image in enumerate(page_images):
-            results.append(self._run_page(page_image, page_index=page_index, source_path=image_path))
-        return results
+        return [self.predict(image)]
+
+    def extract_text(
+        self,
+        image: str | Path,
+        *,
+        job_id: str = "",
+        original_filename: str | None = None,
+        content_type: str | None = None,
+    ) -> OCRTextResponse:
+        result = self.predict(image)
+        lines = [
+            OCRLineResponse(
+                order=line.order,
+                text=line.text,
+                normalized_text=line.normalized_text or line.text,
+                confidence=line.rec_score,
+                bbox=line.bbox,
+            )
+            for line in result.lines
+            if line.accepted and line.text.strip()
+        ]
+        text = "\n".join(line.text for line in lines)
+        normalized_text = "\n".join((line.normalized_text or line.text) for line in lines)
+        meta: dict[str, object] = {
+            "original_filename": original_filename,
+            "content_type": content_type,
+            "image_size": result.meta.get("image_size"),
+            "profile": result.meta.get("profile"),
+            "device": result.meta.get("device"),
+            "engine": result.meta.get("engine"),
+            "timings_ms": result.timings_ms,
+        }
+        return OCRTextResponse(
+            job_id=job_id,
+            text=text,
+            normalized_text=normalized_text,
+            lines=lines,
+            line_count=len(lines),
+            meta=meta,
+        )
 
     def build_document_payload(
         self,
@@ -580,24 +615,7 @@ class OCRPipeline:
         return image_path
 
     def _load_page_images(self, image_path: Path) -> list[np.ndarray]:
-        if image_path.suffix.lower() != ".pdf":
-            return [self._load_image_rgb(image_path)]
-
-        try:
-            import pypdfium2 as pdfium
-        except ImportError as exc:
-            raise RuntimeError("pypdfium2 is required to rasterize PDF uploads.") from exc
-
-        document = pdfium.PdfDocument(str(image_path))
-        images: list[np.ndarray] = []
-        try:
-            for index in range(len(document)):
-                page = document[index]
-                bitmap = page.render(scale=2.0).to_pil().convert("RGB")
-                images.append(np.asarray(bitmap))
-        finally:
-            document.close()
-        return images
+        return [self._load_image_rgb(image_path)]
 
     @staticmethod
     def _load_image_rgb(image_path: Path) -> np.ndarray:

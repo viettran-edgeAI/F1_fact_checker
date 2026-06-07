@@ -129,7 +129,7 @@ class OCRRuntimeConfig:
         default_optional_modules = normalized_profile == "full"
         requested_tensorrt = use_tensorrt if use_tensorrt is not None else env_bool("OCR_USE_TENSORRT", False)
         run_mode = env_str(("OCR_RUN_MODE",), "trt_fp16" if requested_tensorrt else "paddle")
-        use_document_structure = env_bool("OCR_USE_DOCUMENT_STRUCTURE", True)
+        use_document_structure = env_bool("OCR_USE_DOCUMENT_STRUCTURE", False)
 
         layout_threshold_raw = os.environ.get("OCR_LAYOUT_THRESHOLD")
         layout_threshold: float | None = None

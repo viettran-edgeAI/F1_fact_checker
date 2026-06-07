@@ -10,15 +10,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 
 from .pipeline import OCRPipeline
+from .schemas import OCRTextResponse
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("OCR_DATA_DIR", APP_ROOT / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
-RESULT_DIR = DATA_DIR / "results"
+RESULT_DIR = DATA_DIR / "ocr_text"
 WARMUP_IMAGE_PATH = DATA_DIR / ".ocr_warmup.png"
 
 logger = logging.getLogger("ocr_service.main")
@@ -55,12 +55,10 @@ def warmup_pipeline(ocr: OCRPipeline) -> None:
     image = Image.new("RGB", (960, 480), color=(255, 255, 255))
     draw = ImageDraw.Draw(image)
     draw.text((48, 72), "OCR WARMUP 123", fill=(0, 0, 0))
-    draw.text((48, 164), "f(x) = x^2 + 3x + 2", fill=(0, 0, 0))
-    draw.text((48, 256), "int_0^1 x^2 dx = 1/3", fill=(0, 0, 0))
+    draw.text((48, 164), "F1 FACT CHECKER", fill=(0, 0, 0))
     image.save(WARMUP_IMAGE_PATH)
     try:
-        ocr.predict_document(WARMUP_IMAGE_PATH)
-        ocr.warmup_formula_module()
+        ocr.extract_text(WARMUP_IMAGE_PATH, job_id="warmup", original_filename=WARMUP_IMAGE_PATH.name)
     finally:
         if WARMUP_IMAGE_PATH.exists():
             WARMUP_IMAGE_PATH.unlink(missing_ok=True)
@@ -97,7 +95,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Jetson OCR", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="F1 Fact Checker OCR Service", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -116,36 +114,33 @@ def healthz() -> dict[str, str | bool | None]:
     }
 
 
-@app.post("/v1/ocr", response_class=PlainTextResponse)
-async def ocr_image(image: UploadFile = File(...)) -> PlainTextResponse:
+@app.post("/v1/ocr", response_model=OCRTextResponse)
+async def ocr_image(image: UploadFile = File(...)) -> OCRTextResponse:
     content_type = image.content_type or ""
     is_image = content_type.startswith("image/")
-    is_pdf = content_type == "application/pdf" or (image.filename or "").lower().endswith(".pdf")
-    if not is_image and not is_pdf:
-        raise HTTPException(status_code=400, detail="Only image and PDF uploads are supported.")
+    if not is_image:
+        raise HTTPException(status_code=400, detail="Only image uploads are supported.")
 
     job_id = uuid.uuid4().hex
-    suffix = Path(image.filename or "upload").suffix or (".pdf" if is_pdf else ".png")
+    suffix = Path(image.filename or "upload").suffix or ".png"
     upload_path = UPLOAD_DIR / f"{job_id}{suffix}"
-    result_path = RESULT_DIR / f"{job_id}.md"
+    result_path = RESULT_DIR / f"{job_id}.txt"
 
     with upload_path.open("wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
 
     ocr = get_pipeline()
-    page_results = ocr.predict_document(upload_path)
-    markdown = ocr.build_document_markdown(
-        page_results,
-        original_filename=image.filename,
-        content_type=image.content_type,
+    result = OCRTextResponse.model_validate(
+        ocr.extract_text(
+            upload_path,
+            job_id=job_id,
+            original_filename=image.filename,
+            content_type=image.content_type,
+        )
     )
 
-    result_path.write_text(markdown, encoding="utf-8")
-    return PlainTextResponse(
-        markdown,
-        media_type="text/markdown; charset=utf-8",
-        headers={"X-OCR-Job-ID": job_id},
-    )
+    result_path.write_text(result.normalized_text, encoding="utf-8")
+    return result
 
 
 def main() -> None:
