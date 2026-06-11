@@ -34,8 +34,6 @@ input
 ↓
 text normalization
 ↓
-F1 relevance check
-↓
 claim extraction
 ↓
 claim classification per claim
@@ -66,15 +64,11 @@ flowchart TD
 
     C --> F[Clean normalized text]
 
-    F --> G[Gemma: F1 relevance check]
-
-    G -->|Not F1 related| H[Return early<br/>Not related to Formula 1]
-
-    G -->|F1 related| I[Gemma: extract checkable claims]
+    F --> I[Gemma: extract F1-related checkable claims]
 
     I --> J{Any checkable claims?}
 
-    J -->|No| K[Return<br/>F1-related content found<br/>but no checkable claims detected]
+    J -->|No| K[Return<br/>No F1-related claim found]
 
     J -->|Yes| L[Gemma: classify each claim]
 
@@ -95,7 +89,8 @@ flowchart TD
 
 `fact-check-service` exposes text, URL, and image endpoints. URL and image
 inputs are normalized into clean text first, then all three paths reuse the same
-F1 relevance gate, claim extraction, routing, retrieval, and verdict pipeline.
+claim extraction, routing, retrieval, and verdict pipeline. If no F1-related
+checkable claim is extracted, the service returns `No F1-related claim found`.
 
 ## Model Storage
 
