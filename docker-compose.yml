@@ -43,8 +43,8 @@ services:
         DEPS_CACHE_BUSTER: ${DEPS_CACHE_BUSTER:-0}
     env_file:
       - ./configs/models.container.env
-    expose:
-      - "8082"
+    ports:
+      - "8082:8082"
     volumes:
       - ./src:/app/src:ro
       - ./data:/data
@@ -52,6 +52,21 @@ services:
     environment:
       OCR_SERVICE_URL: http://ocr-service:8000
       LLM_SERVICE_URL: http://llm-service:8081
+      FACT_DB_PATH: ${FACT_DB_PATH:-/data/knowledge_db/f1.sqlite}
+      FACT_SOURCE_DATA_DIR: ${FACT_SOURCE_DATA_DIR:-/data/F1_WC_data}
+      FACT_METADATA_PATH: ${FACT_METADATA_PATH:-/data/knowledge_db/fact_metadata.jsonl}
+      JOLPICA_CACHE_DIR: ${JOLPICA_CACHE_DIR:-/data/source_data/jolpica_cache}
+      JOLPICA_BASE_URL: ${JOLPICA_BASE_URL:-https://api.jolpi.ca/ergast/f1}
+      JOLPICA_TIMEOUT_SECONDS: ${JOLPICA_TIMEOUT_SECONDS:-20}
+      FACT_LLM_TIMEOUT_SECONDS: ${FACT_LLM_TIMEOUT_SECONDS:-120}
+      URL_FETCH_TIMEOUT_SECONDS: ${URL_FETCH_TIMEOUT_SECONDS:-10}
+      URL_FETCH_MAX_BYTES: ${URL_FETCH_MAX_BYTES:-3000000}
+      URL_ALLOWED_SCHEMES: ${URL_ALLOWED_SCHEMES:-http,https}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      BRAVE_SEARCH_ENDPOINT: ${BRAVE_SEARCH_ENDPOINT:-https://api.search.brave.com/res/v1/web/search}
+      BRAVE_NEWS_ENDPOINT: ${BRAVE_NEWS_ENDPOINT:-https://api.search.brave.com/res/v1/news/search}
+      BRAVE_SEARCH_COUNT: ${BRAVE_SEARCH_COUNT:-3}
+      BRAVE_SEARCH_TIMEOUT: ${BRAVE_SEARCH_TIMEOUT:-10}
     depends_on:
       ocr-service:
         condition: service_healthy
@@ -113,8 +128,8 @@ services:
     runtime: nvidia
     env_file:
       - ./configs/models.container.env
-    expose:
-      - "8081"
+    ports:
+      - "8081:8081"
     volumes:
       - ./src:/app/src:ro
       - ${HOME}/models:/models:ro
@@ -123,7 +138,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       LLAMA_SERVER_BIN: /opt/llama.cpp/build/bin/llama-server
       LD_LIBRARY_PATH: /opt/llama.cpp/build/bin:/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu/nvidia
-      LLM_CTX_SIZE: 8192
+      LLM_CTX_SIZE: 2048
       LLM_MAX_OCR_CHARS: 6000
       LLM_MAX_TOKENS: 2048
       LLM_THINKING_MAX_TOKENS: 2048
@@ -132,10 +147,10 @@ services:
       LLM_TOP_P: 0.95
       LLM_TOP_K: 40
       LLM_PARALLEL: 1
-      LLM_GPU_LAYERS: 999
+      LLM_GPU_LAYERS: 0
       LLM_DEVICE: ""
       LLM_FLASH_ATTN: ""
-      LLM_FIT: "on"
+      LLM_FIT: "off"
       LLM_KV_OFFLOAD: 1
       LLM_OP_OFFLOAD: 1
     healthcheck:

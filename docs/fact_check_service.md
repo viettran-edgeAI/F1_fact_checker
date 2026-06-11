@@ -6,8 +6,9 @@
 
 This block is the center of the current F1 pipeline:
 
-- structured factual claims are checked against the local Formula 1 knowledge database with SQLite/FTS retrieval
-- news, drama, statement, and rumor-style claims are checked with Brave Search and fetched web evidence
+- structured factual claims are checked against the local Formula 1 knowledge database with SQLite exact / FTS plus FAISS semantic retrieval
+- news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, and ranking
+- mixed claims require both structured and web evidence routes
 - unsupported claims are returned with an explainable `NOT_ENOUGH_INFO` outcome
 
 ## Runtime Role
@@ -18,43 +19,77 @@ The service is a FastAPI app with a narrow HTTP surface. The currently active en
 - `GET /v1/knowledge/status`
 - `POST /v1/knowledge/search`
 - `POST /v1/check/text`
+- `POST /v1/check/url`
+- `POST /v1/check/image`
 
-The text flow is:
+The normalized clean-text flow is:
 
 1. normalize and classify the input for F1 relevance
 2. return early if the input is not Formula 1 related
 3. extract checkable claims from F1-related text
 4. return early if no checkable claim is found
-5. classify each claim into `structured`, `web`, `mixed`, or `unsupported`
-6. retrieve evidence from the local knowledge database and/or Brave Search
-7. generate claim verdicts with Gemma
-8. aggregate the final verdict and response metadata
+5. classify each claim and derive internal `required_routes`
+6. build route worklists for structured and web execution
+7. run the structured route phase for every claim that requires local evidence
+8. run the web route phase for every claim that requires internet evidence
+9. consolidate route evidence back into per-claim bundles
+10. generate claim verdicts with Gemma
+11. aggregate the final verdict and response metadata
 
-The current implementation is text-first. URL and image entry points are handled earlier in the product stack, but they are not part of the active `fact-check-service` HTTP contract yet.
+The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text is fact-checked with the same F1 relevance gate and early-return behavior.
 
 ## Input Contract
 
 `POST /v1/check/text` accepts a `TextCheckRequest` with:
 
 - `text`: required input text
+- `input_type`: normalized source marker; the text endpoint forces this to `text`
 - `max_claims`: maximum claims to extract
 - `top_k`: maximum structured evidence rows to retrieve
 - `verification_streams`: enabled routing targets
 - `include_evidence`: whether to include evidence in the response
 - `meta`: request metadata passed through to the result
 
+`POST /v1/check/url` accepts a `URLCheckRequest` with:
+
+- `url`: required article/page URL
+- `max_claims`, `top_k`, `verification_streams`, `include_evidence`, and `meta`
+
+`POST /v1/check/image` accepts multipart form data with:
+
+- `image`: required image upload
+- `meta`: optional JSON object string passed through to the result
+
 ## Routing Model
 
-The service uses a two-stream verification model:
+The service uses `required_routes` as its internal routing source of truth:
 
-- `structured` claims go to the local SQLite knowledge database with FTS-backed retrieval support
-- `web` claims go to Brave Search, then article fetch/ranking, then Gemma verdict generation
-- `mixed` claims use both evidence paths
-- `unsupported` claims skip retrieval and return `NOT_ENOUGH_INFO`
+- `structured` means the claim requires the structured route only
+- `web` means the claim requires the web route only
+- `mixed` is the compatibility label for claims that require both routes
+- `unsupported` means the claim requires no retrieval routes and returns `NOT_ENOUGH_INFO`
+
+The structured route executes:
+
+- SQLite exact / keyword retrieval
+- FAISS semantic retrieval
+- result normalization and ranking
+
+The web route executes:
+
+- search-query generation
+- Brave `llm/context` grounding
+- optional article fetch
+- evidence normalization
+- evidence ranking
+
+For Gemma-facing grounding, Brave `llm/context` is the primary source because it returns query-focused snippets already selected for LLM consumption. Full article fetch is used only when those snippets are missing or too thin to support a verdict.
 
 This is driven by:
 
 - `llm_client.py` for relevance, extraction, classification, search-query generation, and verdict generation
+- `input_adapters.py` for URL fetch/cleanup and OCR-service image normalization
+- `orchestrator.py` for the reusable normalized-text flow and F1 relevance gate
 - `retrieval.py` for local fact lookup against the SQLite knowledge base
 - `web_search.py` for Brave Search API access
 - `web_evidence.py` for article fetching and evidence ranking
@@ -76,9 +111,10 @@ Each claim verdict records:
 
 - the extracted and classified claim
 - the verdict label
-- the verification stream used
-- the evidence items used to support the verdict
-- the `verified_by` source marker in metadata
+- the compatibility `verification_stream`
+- the merged `evidence` list used by existing clients
+- route-specific `structured_evidence` and `web_evidence`
+- the `verified_by` source marker and route metadata
 
 The service also has explicit early-return responses for:
 
@@ -108,19 +144,28 @@ Relevant environment variables:
 - `FACT_LLM_TIMEOUT_SECONDS`
 - `BRAVE_SEARCH_ENDPOINT`
 - `BRAVE_NEWS_ENDPOINT`
+- `BRAVE_LLM_CONTEXT_ENDPOINT`
 - `BRAVE_SEARCH_COUNT`
 - `BRAVE_SEARCH_TIMEOUT`
+- `BRAVE_CONTEXT_COUNT`
+- `BRAVE_CONTEXT_MAX_URLS`
+- `BRAVE_CONTEXT_MAX_SNIPPETS`
+- `BRAVE_CONTEXT_MAX_TOKENS`
 - `BRAVE_SEARCH_API_KEY`
+- `OCR_SERVICE_URL`
+- `URL_FETCH_TIMEOUT_SECONDS`
+- `URL_FETCH_MAX_BYTES`
+- `URL_ALLOWED_SCHEMES`
 - `FACT_CHECK_HOST`
 - `FACT_CHECK_PORT`
 
 ## Limitations
 
-- The service currently exposes text fact checking only.
-- URL and image verification are planned elsewhere in the stack, not as active `fact-check-service` routes.
+- URL extraction depends on page accessibility and readable HTML/text content.
+- Image verification depends on `ocr-service` availability and OCR quality.
 - Web evidence quality depends on Brave Search coverage and article accessibility.
 - Verdict quality depends on model adherence to the claim and evidence prompts.
 
 ## Pipeline Fit
 
-`fact-check-service` is the decision layer between input normalization and final verdict generation. It is designed to consume cleaned text from OCR, URL extraction, or direct text input, but only the text path is active in the current service API.
+`fact-check-service` is the decision layer between input normalization and final verdict generation. Direct text enters the normalized-text flow immediately; URL and image endpoints normalize their sources first, then reuse the same relevance gate, claim extraction, routing, retrieval, and verdict generation path.

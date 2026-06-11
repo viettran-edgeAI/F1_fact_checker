@@ -60,7 +60,7 @@ def retrieve_structured_evidence(
     resolved_config = config or FactCheckConfig.from_env()
     with connect(resolved_config.db_path) as conn:
         initialize_schema(conn)
-        facts = search_facts(conn, query, limit=limit)
+        facts = search_facts(conn, query, limit=limit, config=resolved_config)
 
     return [fact_to_evidence_item(fact) for fact in facts]
 
@@ -73,4 +73,3 @@ def retrieve_evidence(
 ) -> list[dict[str, Any]]:
     """Compatibility wrapper for structured local knowledge retrieval."""
     return retrieve_structured_evidence(claim, config=config, limit=limit)
-

@@ -21,62 +21,81 @@ The repository is organized around four runtime services:
 
 ## Current Architecture
 
-The current verification model splits claims into two classes after Gemma processing:
+The current verification model extracts all checkable claims first, then executes
+retrieval by route before consolidating evidence back into claim verdicts:
 
-- structured factual claims use the local Formula 1 knowledge database
-- news / drama / statement claims use Brave Search and fetched web evidence
+- structured factual claims use the local Formula 1 knowledge database with SQLite + FAISS-backed retrieval
+- news / drama / statement claims use Brave `llm/context` grounding first, then optional article fetch, normalization, and ranking
+- mixed claims require both structured and web routes
 
 The current text flow is:
-
 ```text
-User input
--> normalize and clean text
--> Gemma F1 relevance classification
--> early return if not F1 related
--> Gemma claim extraction
--> early return if no checkable claim exists
--> Gemma claim classification
--> structured/local or web evidence retrieval
--> Gemma verdict generation
--> final fact-check response
+input
+↓
+text normalization
+↓
+F1 relevance check
+↓
+claim extraction
+↓
+claim classification per claim
+↓
+claim execution planning
+↓
+structured route phase
+↓
+web route phase
+↓
+claim evidence consolidation
+↓
+claim-level verdict
+↓
+aggregate final result
 ```
+
 ```mermaid
 flowchart TD
-    A["User input"] --> B{"Input type?"}
+    A[User input] --> B{Input type?}
 
-    B -->|Text| C["Normalize text"]
-    B -->|Image / Screenshot| D["OCR service<br/>PP-OCRv5 det + rec"]
-    B -->|URL| E["URL fetch / article extraction<br/>or Brave-assisted fetch"]
+    B -->|Text| C[Normalize text]
+    B -->|Image / Screenshot| D[OCR service<br/>Image to plain text]
+    B -->|URL| E[Fetch / extract article text]
 
     D --> C
     E --> C
 
-    C --> F["Clean text<br/>remove noise, boilerplate, OCR artifacts"]
+    C --> F[Clean normalized text]
 
-    F --> G["Gemma: F1 relevance classification"]
+    F --> G[Gemma: F1 relevance check]
 
-    G -->|Not F1 related| H["Return early response"]
-    H --> H1["Message:<br/>This content is not related to Formula 1.<br/>No fact-check was performed."]
+    G -->|Not F1 related| H[Return early<br/>Not related to Formula 1]
 
-    G -->|F1 related| I["Gemma: extract checkable claims"]
+    G -->|F1 related| I[Gemma: extract checkable claims]
 
-    I --> J{"Any checkable claims?"}
+    I --> J{Any checkable claims?}
 
-    J -->|No| K["Return:<br/>F1-related content found,<br/>but no checkable claim detected"]
+    J -->|No| K[Return<br/>F1-related content found<br/>but no checkable claims detected]
 
-    J -->|Yes| L["Gemma: classify each claim"]
+    J -->|Yes| L[Gemma: classify each claim]
 
-    L --> M{"Claim route?"}
+    L --> M[Claim list with required routes]
 
-    M -->|Structured F1 fact| N["Local Knowledge DB<br/>SQLite + FAISS"]
-    M -->|News / statement / rumor / drama| O["Internet Search<br/>Brave Search API"]
+    M --> N[Structured route phase<br/>SQLite exact / FTS + FAISS semantic]
+    M --> O[Web route phase<br/>query generation -> Brave llm/context -> optional fetch -> normalize -> rank]
 
-    N --> P["Evidence items"]
+    N --> P[Claim evidence consolidation]
     O --> P
 
-    P --> Q["Gemma: verdict generation"]
-    Q --> R["Final fact-check result"]
+    P --> Q[Gemma: generate verdict per claim]
+
+    Q --> U[Aggregate all claim verdicts]
+
+    U --> V[Final fact-check result<br/>Overall verdict + claim verdicts + evidence]
 ```
+
+`fact-check-service` exposes text, URL, and image endpoints. URL and image
+inputs are normalized into clean text first, then all three paths reuse the same
+F1 relevance gate, claim extraction, routing, retrieval, and verdict pipeline.
 
 ## Model Storage
 

@@ -229,6 +229,7 @@ def upsert_source(
 def clear_generated_facts(conn: sqlite3.Connection, *, source: str | None = None) -> None:
     if source is None:
         conn.execute("DELETE FROM facts")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'facts'")
     else:
         conn.execute("DELETE FROM facts WHERE source = ?", (source,))
     conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")

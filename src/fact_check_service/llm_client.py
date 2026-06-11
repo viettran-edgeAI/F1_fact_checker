@@ -9,7 +9,14 @@ import httpx
 from pydantic import ValidationError
 
 from .config import FactCheckConfig
-from .schemas import ClassifiedClaim, ExtractedClaim, F1RelevanceLabel, F1RelevanceResult, VerificationStream
+from .schemas import (
+    ClassifiedClaim,
+    ExtractedClaim,
+    F1RelevanceLabel,
+    F1RelevanceResult,
+    RetrievalRoute,
+    VerificationStream,
+)
 
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
@@ -74,6 +81,7 @@ class LLMClient:
             {"claim": claim.text, "context": context},
         )
         route = _route(payload.get("route") or payload.get("verification_stream"))
+        required_routes = _required_routes(route)
         entities = payload.get("structured_requirements", {}).get("entities", [])
         if not isinstance(entities, list):
             entities = []
@@ -81,11 +89,16 @@ class LLMClient:
         return ClassifiedClaim(
             **claim.model_dump(),
             verification_stream=route,
+            required_routes=required_routes,
             claim_type=str(payload.get("claim_type") or claim.meta.get("claim_type") or ""),
             entities=[str(entity) for entity in entities if entity],
             structured_query=_structured_query(claim, payload),
+            web_query_hint=_web_query_hint(payload),
             unsupported_reason=str(unsupported_reason) if unsupported_reason else None,
         )
+
+    def classify_claims(self, claims: list[ExtractedClaim], *, context: str = "") -> list[ClassifiedClaim]:
+        return [self.classify_claim(claim, context=context) for claim in claims]
 
     def generate_search_query(self, claim: ClassifiedClaim, *, context: str = "") -> str:
         payload = self._run_json_prompt(
@@ -101,7 +114,20 @@ class LLMClient:
             first = queries[0]
             if isinstance(first, dict) and first.get("query"):
                 return str(first["query"]).strip()
-        return claim.text
+        return claim.web_query_hint or claim.text
+
+    def generate_search_queries(
+        self,
+        claims: list[ClassifiedClaim],
+        *,
+        context: str = "",
+    ) -> dict[str, str]:
+        queries: dict[str, str] = {}
+        for claim in claims:
+            if RetrievalRoute.WEB not in claim.required_routes:
+                continue
+            queries[claim.claim_id] = self.generate_search_query(claim, context=context)
+        return queries
 
     def generate_verdict(
         self,
@@ -115,8 +141,8 @@ class LLMClient:
             {
                 "claim": claim.model_dump_json(),
                 "classification": claim.model_dump_json(),
-                "structured_evidence": json.dumps(structured_evidence, ensure_ascii=False),
-                "web_evidence": json.dumps(web_evidence, ensure_ascii=False),
+                "structured_evidence": json.dumps(_compact_evidence(structured_evidence), ensure_ascii=False),
+                "web_evidence": json.dumps(_compact_evidence(web_evidence), ensure_ascii=False),
             },
         )
 
@@ -126,7 +152,7 @@ class LLMClient:
         return _parse_json_object(response)
 
     def _post_answer(self, prompt: str) -> str:
-        payload = {"user_request": prompt, "thinking_mode": "fast", "max_tokens": 2048}
+        payload = {"user_request": prompt, "thinking_mode": "fast", "max_tokens": 512}
         if self.client is not None:
             response = self.client.post(f"{self.config.llm_service_url}/v1/answer", json=payload)
         else:
@@ -173,6 +199,34 @@ def _route(value: Any) -> VerificationStream:
         return VerificationStream.UNSUPPORTED
 
 
+def _required_routes(route: VerificationStream) -> list[RetrievalRoute]:
+    if route == VerificationStream.STRUCTURED:
+        return [RetrievalRoute.STRUCTURED]
+    if route == VerificationStream.WEB:
+        return [RetrievalRoute.WEB]
+    if route == VerificationStream.MIXED:
+        return [RetrievalRoute.STRUCTURED, RetrievalRoute.WEB]
+    return []
+
+
+def _compact_evidence(items: list[dict[str, Any]], *, max_items: int = 4, max_snippet_chars: int = 400) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in items[:max_items]:
+        compacted.append(
+            {
+                "evidence_id": item.get("evidence_id"),
+                "source_type": item.get("source_type"),
+                "title": item.get("title"),
+                "snippet": str(item.get("snippet") or "")[:max_snippet_chars],
+                "url": item.get("url"),
+                "source_id": item.get("source_id"),
+                "score": item.get("score"),
+                "published_at": item.get("published_at"),
+            }
+        )
+    return compacted
+
+
 def _structured_query(claim: ExtractedClaim, payload: dict[str, Any]) -> str | None:
     parts = [claim.text]
     requirements = payload.get("structured_requirements")
@@ -185,6 +239,16 @@ def _structured_query(claim: ExtractedClaim, payload: dict[str, Any]) -> str | N
                 parts.append(str(value))
     query = " ".join(parts).strip()
     return query or None
+
+
+def _web_query_hint(payload: dict[str, Any]) -> str | None:
+    requirements = payload.get("web_requirements")
+    if not isinstance(requirements, dict):
+        return None
+    query_intent = requirements.get("query_intent")
+    if query_intent:
+        return str(query_intent).strip() or None
+    return None
 
 
 def _float_or_none(value: Any) -> float | None:

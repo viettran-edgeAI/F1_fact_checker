@@ -14,6 +14,7 @@ import httpx
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_USER_AGENT = "F1-fact-checker/0.1"
 MAX_ARTICLE_CHARS = 12_000
+MIN_DIRECT_SNIPPET_CHARS = 280
 
 RELIABLE_DOMAIN_WEIGHTS = {
     "formula1.com": 4.0,
@@ -65,6 +66,15 @@ class WebEvidence:
     source: str
     text: str
     score: float
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedSearchResult:
+    title: str
+    url: str
+    snippet: str
+    source: str
+    published_at: str | None = None
 
 
 class _VisibleTextParser(HTMLParser):
@@ -172,6 +182,80 @@ def fetch_ranked_evidence_from_results(
             http_client.close()
 
     return sorted(evidence, key=lambda item: item.score, reverse=True)[:top_n]
+
+
+def normalize_search_results(results: list[dict[str, Any]]) -> list[NormalizedSearchResult]:
+    normalized_results: list[NormalizedSearchResult] = []
+    for result in results:
+        normalized = _normalize_result(result)
+        title = _clean_text(str(normalized.get("title") or ""))
+        url = str(normalized.get("url") or "").strip()
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+        normalized_results.append(
+            NormalizedSearchResult(
+                title=title,
+                url=url,
+                snippet=_clean_text(str(normalized.get("description") or "")),
+                source=_hostname(url),
+                published_at=str(normalized.get("published_at") or "") or None,
+            )
+        )
+    return normalized_results
+
+
+def fetch_article_texts(
+    results: list[NormalizedSearchResult],
+    *,
+    client: httpx.Client | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, str]:
+    if not results:
+        return {}
+
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+    try:
+        texts = {
+            result.url: _fetch_article_text(http_client, result.url, timeout_seconds)
+            for result in results
+            if len(result.snippet.strip()) < MIN_DIRECT_SNIPPET_CHARS
+        }
+    finally:
+        if owns_client:
+            http_client.close()
+    return texts
+
+
+def rank_evidence_candidates(
+    query: str,
+    results: list[NormalizedSearchResult],
+    article_texts: dict[str, str],
+    *,
+    top_n: int = 3,
+) -> list[WebEvidence]:
+    ranked: list[WebEvidence] = []
+    for index, result in enumerate(results):
+        text = article_texts.get(result.url) or result.snippet
+        if not text:
+            continue
+        ranked.append(
+            WebEvidence(
+                title=result.title,
+                url=result.url,
+                source=result.source,
+                text=text,
+                score=rank_article(
+                    query,
+                    title=result.title,
+                    url=result.url,
+                    snippet=result.snippet,
+                    text=text,
+                    result_index=index,
+                ),
+            )
+        )
+    return sorted(ranked, key=lambda item: item.score, reverse=True)[:top_n]
 
 
 def extract_visible_text(html: str, *, max_chars: int = MAX_ARTICLE_CHARS) -> str:

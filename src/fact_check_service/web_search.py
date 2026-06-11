@@ -11,6 +11,7 @@ import httpx
 
 DEFAULT_BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_BRAVE_NEWS_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
+DEFAULT_BRAVE_LLM_CONTEXT_ENDPOINT = "https://api.search.brave.com/res/v1/llm/context"
 DEFAULT_BRAVE_SEARCH_COUNT = 5
 DEFAULT_BRAVE_SEARCH_TIMEOUT = 10.0
 
@@ -25,6 +26,7 @@ class BraveSearchError(RuntimeError):
 class BraveSearchConfig:
     search_endpoint: str
     news_endpoint: str
+    llm_context_endpoint: str
     count: int
     timeout_seconds: float
     api_key: str | None
@@ -34,6 +36,7 @@ class BraveSearchConfig:
         return cls(
             search_endpoint=os.environ.get("BRAVE_SEARCH_ENDPOINT", DEFAULT_BRAVE_SEARCH_ENDPOINT),
             news_endpoint=os.environ.get("BRAVE_NEWS_ENDPOINT", DEFAULT_BRAVE_NEWS_ENDPOINT),
+            llm_context_endpoint=os.environ.get("BRAVE_LLM_CONTEXT_ENDPOINT", DEFAULT_BRAVE_LLM_CONTEXT_ENDPOINT),
             count=_read_positive_int("BRAVE_SEARCH_COUNT", DEFAULT_BRAVE_SEARCH_COUNT),
             timeout_seconds=_read_positive_float("BRAVE_SEARCH_TIMEOUT", DEFAULT_BRAVE_SEARCH_TIMEOUT),
             api_key=os.environ.get("BRAVE_SEARCH_API_KEY"),
@@ -50,6 +53,9 @@ class BraveSearchConfig:
         if kind not in ("web", "news"):
             raise BraveSearchError("Search kind must be 'web' or 'news'.")
         return self.news_endpoint if kind == "news" else self.search_endpoint
+
+    def context_endpoint(self) -> str:
+        return self.llm_context_endpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +98,26 @@ class BraveSearchClient:
         payload = await self._arequest(query=query, kind=kind, count=count, client=client)
         return [result.to_dict() for result in _normalize_results(payload, kind=kind)]
 
+    def llm_context(
+        self,
+        query: str,
+        *,
+        count: int | None = None,
+        max_urls: int = 5,
+        max_snippets: int = 12,
+        max_tokens: int = 4096,
+        client: httpx.Client | None = None,
+    ) -> list[dict[str, str | None]]:
+        payload = self._context_request(
+            query=query,
+            count=count,
+            max_urls=max_urls,
+            max_snippets=max_snippets,
+            max_tokens=max_tokens,
+            client=client,
+        )
+        return _normalize_context_results(payload)
+
     def _request(
         self,
         *,
@@ -101,6 +127,29 @@ class BraveSearchClient:
         client: httpx.Client | None,
     ) -> dict[str, Any]:
         request_args = self._build_request_args(query=query, kind=kind, count=count)
+        if client is not None:
+            return self._parse_response(client.get(**request_args))
+
+        with httpx.Client(timeout=self.config.timeout_seconds) as owned_client:
+            return self._parse_response(owned_client.get(**request_args))
+
+    def _context_request(
+        self,
+        *,
+        query: str,
+        count: int | None,
+        max_urls: int,
+        max_snippets: int,
+        max_tokens: int,
+        client: httpx.Client | None,
+    ) -> dict[str, Any]:
+        request_args = self._build_context_request_args(
+            query=query,
+            count=count,
+            max_urls=max_urls,
+            max_snippets=max_snippets,
+            max_tokens=max_tokens,
+        )
         if client is not None:
             return self._parse_response(client.get(**request_args))
 
@@ -138,6 +187,37 @@ class BraveSearchClient:
             "params": {
                 "q": normalized_query,
                 "count": _validate_count(count) if count is not None else self.config.count,
+            },
+        }
+
+    def _build_context_request_args(
+        self,
+        *,
+        query: str,
+        count: int | None,
+        max_urls: int,
+        max_snippets: int,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise BraveSearchError("Search query must not be empty.")
+
+        return {
+            "url": self.config.context_endpoint(),
+            "headers": {
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "X-Subscription-Token": self.config.require_api_key(),
+            },
+            "params": {
+                "q": normalized_query,
+                "count": _validate_count(count) if count is not None else self.config.count,
+                "maximum_number_of_urls": _validate_count(max_urls),
+                "maximum_number_of_snippets": _validate_count(max_snippets),
+                "maximum_number_of_tokens": _validate_count(max_tokens),
+                "enable_source_metadata": True,
+                "context_threshold_mode": "balanced",
             },
         }
 
@@ -181,6 +261,26 @@ def search_news(
     return BraveSearchClient(config).search(query, kind="news", count=count, client=client)
 
 
+def search_llm_context(
+    query: str,
+    *,
+    count: int | None = None,
+    max_urls: int = 5,
+    max_snippets: int = 12,
+    max_tokens: int = 4096,
+    client: httpx.Client | None = None,
+    config: BraveSearchConfig | None = None,
+) -> list[dict[str, str | None]]:
+    return BraveSearchClient(config).llm_context(
+        query,
+        count=count,
+        max_urls=max_urls,
+        max_snippets=max_snippets,
+        max_tokens=max_tokens,
+        client=client,
+    )
+
+
 def _normalize_results(payload: dict[str, Any], *, kind: SearchKind) -> list[WebSearchResult]:
     raw_results = _extract_raw_results(payload, kind=kind)
     normalized: list[WebSearchResult] = []
@@ -205,6 +305,41 @@ def _normalize_results(payload: dict[str, Any], *, kind: SearchKind) -> list[Web
                 domain=domain,
                 published_at=_extract_published_at(item),
             )
+        )
+    return normalized
+
+
+def _normalize_context_results(payload: dict[str, Any]) -> list[dict[str, str | None]]:
+    grounding = payload.get("grounding")
+    generic_items = grounding.get("generic") if isinstance(grounding, dict) else None
+    if not isinstance(generic_items, list):
+        return []
+
+    sources = payload.get("sources")
+    normalized: list[dict[str, str | None]] = []
+    for item in generic_items:
+        if not isinstance(item, dict):
+            continue
+        url = _clean_string(item.get("url"))
+        title = _clean_string(item.get("title"))
+        snippets = item.get("snippets")
+        if not url or not title or not isinstance(snippets, list):
+            continue
+        cleaned_snippets = [_clean_string(snippet) for snippet in snippets]
+        cleaned_snippets = [snippet for snippet in cleaned_snippets if snippet]
+        if not cleaned_snippets:
+            continue
+        source_meta = sources.get(url) if isinstance(sources, dict) and isinstance(sources.get(url), dict) else {}
+        source_name = _clean_string(source_meta.get("site_name")) or _extract_domain({}, url)
+        normalized.append(
+            {
+                "title": title,
+                "url": url,
+                "description": "\n\n".join(cleaned_snippets),
+                "snippet": "\n\n".join(cleaned_snippets),
+                "source": source_name,
+                "published_at": _clean_string(source_meta.get("page_last_modified")),
+            }
         )
     return normalized
 

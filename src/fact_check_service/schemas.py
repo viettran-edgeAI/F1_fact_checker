@@ -12,6 +12,11 @@ class VerificationStream(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
+class RetrievalRoute(str, Enum):
+    STRUCTURED = "structured"
+    WEB = "web"
+
+
 class VerdictLabel(str, Enum):
     SUPPORTS = "SUPPORTS"
     REFUTES = "REFUTES"
@@ -28,6 +33,12 @@ class F1RelevanceLabel(str, Enum):
     NOT_F1_RELATED = "not_f1_related"
 
 
+class CheckInputType(str, Enum):
+    TEXT = "text"
+    URL = "url"
+    IMAGE = "image"
+
+
 class FactSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=8, ge=1, le=50)
@@ -40,6 +51,22 @@ class FactSearchResponse(BaseModel):
 
 class TextCheckRequest(BaseModel):
     text: str = Field(min_length=1)
+    input_type: CheckInputType = CheckInputType.TEXT
+    max_claims: int = Field(default=8, ge=1, le=50)
+    top_k: int = Field(default=8, ge=1, le=50)
+    verification_streams: list[VerificationStream] = Field(
+        default_factory=lambda: [
+            VerificationStream.STRUCTURED,
+            VerificationStream.WEB,
+            VerificationStream.MIXED,
+        ]
+    )
+    include_evidence: bool = True
+    meta: dict[str, object] = Field(default_factory=dict)
+
+
+class URLCheckRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2000)
     max_claims: int = Field(default=8, ge=1, le=50)
     top_k: int = Field(default=8, ge=1, le=50)
     verification_streams: list[VerificationStream] = Field(
@@ -72,9 +99,11 @@ class ExtractedClaim(BaseModel):
 
 class ClassifiedClaim(ExtractedClaim):
     verification_stream: VerificationStream = VerificationStream.UNSUPPORTED
+    required_routes: list[RetrievalRoute] = Field(default_factory=list)
     claim_type: str = ""
     entities: list[str] = Field(default_factory=list)
     structured_query: str | None = None
+    web_query_hint: str | None = None
     unsupported_reason: str | None = None
 
 
@@ -101,6 +130,8 @@ class ClaimVerdict(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     rationale: str = ""
     evidence: list[EvidenceItem] = Field(default_factory=list)
+    structured_evidence: list[EvidenceItem] = Field(default_factory=list)
+    web_evidence: list[EvidenceItem] = Field(default_factory=list)
     meta: dict[str, object] = Field(default_factory=dict)
 
 
