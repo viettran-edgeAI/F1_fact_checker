@@ -1,0 +1,173 @@
+# F1 Fact Checker - Web source trust policy
+# Last reviewed: 2026-06-12
+# Purpose: rank/filter Brave Search API / Brave LLM Context results before sending evidence to Gemma.
+# Notes:
+# - This is not a hard-only whitelist by default. It is a source trust policy.
+# - Match domains using exact domain or subdomain, e.g. news.fia.com matches fia.com.
+# - Review team domains at least once per F1 season because team names and official websites can change.
+
+version: 1
+policy_name: f1_source_policy
+last_reviewed: "2026-06-12"
+domain_match: exact_or_subdomain
+
+brave_llm_context_defaults:
+  # Conservative defaults for a local Gemma/Jetson pipeline.
+  # Brave defaults may be larger; keep this compact to reduce noise and prompt size.
+  maximum_number_of_urls: 3
+  maximum_number_of_snippets: 8
+  maximum_number_of_tokens: 3000
+  maximum_number_of_tokens_per_url: 800
+
+source_tiers:
+  official:
+    description: "Official F1/FIA/championship/team sources. Highest trust for rules, calendar, penalties, results, and official statements."
+    trust_score: 1.00
+    verdict_strength: high
+    domains:
+      # Championship / governing body
+      - fia.com
+      - formula1.com
+      - f1.com
+      - f1academy.com
+
+      # Current/recent official team domains. Review every season.
+      - mercedesamgf1.com
+      - ferrari.com
+      - mclaren.com
+      - redbullracing.com
+      - alpinef1.com
+      - williamsf1.com
+      - astonmartinf1.com
+      - haasf1team.com
+      - visacashapprb.com
+      - cadillacf1team.com
+      - audi.com
+      - sauber-group.com
+
+  major_news:
+    description: "General news organizations with strong editorial standards. Useful for breaking news, business, governance, and major announcements."
+    trust_score: 0.90
+    verdict_strength: high
+    domains:
+      - reuters.com
+      - apnews.com
+      - bbc.com
+      - bbc.co.uk
+      - skysports.com
+      - espn.com
+      - theguardian.com
+
+  specialist_motorsport:
+    description: "Specialist motorsport/F1 outlets. Useful for race reporting, technical analysis, paddock context, and driver/team news."
+    trust_score: 0.80
+    verdict_strength: medium_high
+    domains:
+      - autosport.com
+      - motorsport.com
+      - the-race.com
+      - racingnews365.com
+      - planetf1.com
+      - racefans.net
+      - motorsportweek.com
+      - formu1a.uno
+
+  stats_reference:
+    description: "Reference/statistics sources. Useful for historical results and records, but prefer local DB or official F1/FIA when available."
+    trust_score: 0.75
+    verdict_strength: medium
+    domains:
+      - statsf1.com
+      - racing-reference.info
+      - wikipedia.org
+      - wikidata.org
+
+  social_forum:
+    description: "Social/forum/video sources. Use only as weak context or rumor signal, not as primary proof for a verdict."
+    trust_score: 0.35
+    verdict_strength: low
+    domains:
+      - reddit.com
+      - x.com
+      - twitter.com
+      - instagram.com
+      - facebook.com
+      - tiktok.com
+      - youtube.com
+
+  unknown:
+    description: "Any source not matched by another tier. Keep only when no better source exists or when it adds useful context."
+    trust_score: 0.45
+    verdict_strength: low
+    domains: []
+
+blocked_domains:
+  # Add spam, scraper, AI-rewrite, or malicious domains here as they appear in logs.
+  # Examples intentionally left disabled.
+  # - spam-example.com
+  # - content-farm-example.net
+
+claim_type_policy:
+  regulation_or_penalty:
+    preferred_tiers: [official]
+    acceptable_tiers: [major_news]
+    minimum_tier_for_strong_verdict: official
+    fallback_verdict_if_only_low_trust: insufficient_reliable_evidence
+
+  race_result_or_calendar:
+    preferred_tiers: [official, stats_reference]
+    acceptable_tiers: [major_news, specialist_motorsport]
+    minimum_tier_for_strong_verdict: official
+    fallback_verdict_if_only_low_trust: insufficient_reliable_evidence
+
+  team_or_driver_statement:
+    preferred_tiers: [official, major_news]
+    acceptable_tiers: [specialist_motorsport]
+    minimum_tier_for_strong_verdict: major_news
+    fallback_verdict_if_only_low_trust: unverified
+
+  news_or_drama:
+    preferred_tiers: [major_news, specialist_motorsport, official]
+    acceptable_tiers: [unknown]
+    minimum_tier_for_strong_verdict: specialist_motorsport
+    fallback_verdict_if_only_low_trust: unverified
+
+  rumor:
+    preferred_tiers: [major_news, specialist_motorsport]
+    acceptable_tiers: [official, unknown, social_forum]
+    minimum_tier_for_strong_verdict: specialist_motorsport
+    fallback_verdict_if_only_low_trust: unverified_rumor
+
+  technical_analysis:
+    preferred_tiers: [official, specialist_motorsport]
+    acceptable_tiers: [major_news, unknown]
+    minimum_tier_for_strong_verdict: specialist_motorsport
+    fallback_verdict_if_only_low_trust: insufficient_reliable_evidence
+
+ranking:
+  # final_score = source_trust*w1 + relevance*w2 + recency*w3 + content_quality*w4
+  weights:
+    source_trust: 0.45
+    semantic_relevance: 0.30
+    recency: 0.15
+    content_quality: 0.10
+
+  deduplication:
+    by_url: true
+    by_canonical_url: true
+    by_domain_soft_limit: 2
+
+  evidence_limits:
+    max_sources_per_claim: 8
+    max_sources_per_domain: 2
+    min_sources_for_strong_verdict: 2
+    allow_single_source_strong_verdict_if_tier: official
+
+prompt_export:
+  include_source_tier: true
+  include_url: true
+  include_title: true
+  include_published_at: true
+  include_domain: true
+  include_snippet: true
+  max_snippet_chars: 1200

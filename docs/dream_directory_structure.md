@@ -9,7 +9,7 @@ F1_fact_checker/
 ├── stop_app.sh
 │
 ├── docs/
-│   ├── project_directory_structure.md
+│   ├── project_structure.md
 │   ├── web_app.md
 │   ├── ocr_service.md
 │   ├── llm_service.md
