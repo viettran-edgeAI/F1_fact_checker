@@ -53,43 +53,45 @@ aggregate final result
 
 ```mermaid
 flowchart TD
-    A[User input] --> B{Input type?}
+    A["User input"] --> B{"Input type?"}
 
-    B -->|Text| C[Normalize text]
-    B -->|Image / Screenshot| D[OCR service<br/>Image to plain text]
-    B -->|URL| E[Fetch / extract article text]
+    B -->|Text| C["Normalize text"]
+    B -->|Image / Screenshot| D["OCR service<br/>Image to plain text"]
+    B -->|URL| E["Fetch / extract article text"]
 
     D --> C
     E --> C
 
-    C --> F[Clean normalized text]
+    C --> F["Clean normalized text"]
 
-    F --> G[Gemma: extract checkable F1 claims - (instant)]
+    F --> G["Gemma: extract checkable F1 claims<br/>(instant mode)"]
 
-    G --> H{Any checkable claims?}
+    G --> H{"Any checkable claims?"}
 
-    H -->|No| I[Return<br/>No F1-related claim found]
+    H -->|No| I["Return<br/>No F1-related claim found"]
 
-    H -->|Yes| J[Gemma: classify each claim - (instant)]
+    H -->|Yes| J["Gemma: classify each claim<br/>(instant mode)"]
 
-    J --> K[Gemma: claim execution planning - (instant)]
+    J --> K["Gemma: claim execution planning<br/>(instant mode)"]
 
-    K --> L[Claim list with required routes]
+    K --> L["Claim list with required routes"]
 
-    L --> M[Structured route phase<br/>SQLite exact / FTS + FAISS semantic]
+    L --> M["Structured route phase<br/>SQLite exact / FTS + FAISS semantic"]
 
-    L --> N[Web route phase<br/>query generation -> Brave llm/context<br/>+ source_policy.yaml filtering/ranking]
+    L --> N["Web route phase<br/>query generation -> Brave llm/context"]
 
-    M --> O[Claim evidence consolidation]
-    N --> O
+    N --> O["Apply source_policy.yaml<br/>filtering + tier scoring + ranking"]
 
-    O --> P[Gemma: generate verdict per claim - (instant/thinking)]
+    M --> P["Claim evidence consolidation"]
+    O --> P
 
-    P --> Q[Claim-level verdict]
+    P --> Q["Gemma: generate verdict per claim<br/>(instant/thinking mode)"]
 
-    Q --> R[Gemma: aggregate final result - (thinking)]
+    Q --> R["Claim-level verdict"]
 
-    R --> S[Final fact-check result<br/>Overall verdict + claim verdicts + evidence]
+    R --> S["Gemma: aggregate final result<br/>(thinking mode)"]
+
+    S --> T["Final fact-check result<br/>Overall verdict + claim verdicts + evidence"]
 ```
 
 `fact-check-service` exposes text, URL, and image endpoints. URL and image
