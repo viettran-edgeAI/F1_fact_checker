@@ -2,12 +2,12 @@
 
 ## Purpose
 
-`fact-check-service` is the orchestration layer for Formula 1 claim verification. It receives cleaned text, classifies whether the content is F1-related, extracts checkable claims, routes each claim to the correct evidence source, and returns claim-level and final verdicts.
+`fact-check-service` is the orchestration layer for Formula 1 claim verification. It receives cleaned text, extracts Formula 1-related checkable claims, routes each claim to the correct evidence source, and returns claim-level and final verdicts.
 
 This block is the center of the current F1 pipeline:
 
 - structured factual claims are checked against the local Formula 1 knowledge database with SQLite exact / FTS plus FAISS semantic retrieval
-- news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, and ranking
+- news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, source-policy filtering, and ranking
 - mixed claims require both structured and web evidence routes
 - unsupported claims are returned with an explainable `NOT_ENOUGH_INFO` outcome
 
@@ -24,19 +24,18 @@ The service is a FastAPI app with a narrow HTTP surface. The currently active en
 
 The normalized clean-text flow is:
 
-1. normalize and classify the input for F1 relevance
-2. return early if the input is not Formula 1 related
-3. extract checkable claims from F1-related text
-4. return early if no checkable claim is found
-5. classify each claim and derive internal `required_routes`
-6. build route worklists for structured and web execution
-7. run the structured route phase for every claim that requires local evidence
-8. run the web route phase for every claim that requires internet evidence
-9. consolidate route evidence back into per-claim bundles
-10. generate claim verdicts with Gemma
-11. aggregate the final verdict and response metadata
+1. normalize input text
+2. extract Formula 1-related checkable claims
+3. return early if no F1-related checkable claim is found
+4. classify each claim and derive internal `required_routes`
+5. build route worklists for structured and web execution
+6. run the structured route phase for every claim that requires local evidence
+7. run the web route phase for every claim that requires internet evidence
+8. consolidate route evidence back into per-claim bundles
+9. generate claim verdicts with Gemma
+10. aggregate the final verdict and response metadata
 
-The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text is fact-checked with the same F1 relevance gate and early-return behavior.
+The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text uses the same claim extraction, routing, retrieval, and early-return behavior.
 
 ## Input Contract
 
@@ -81,18 +80,20 @@ The web route executes:
 - Brave `llm/context` grounding
 - optional article fetch
 - evidence normalization
-- evidence ranking
+- source-policy filtering and evidence ranking
 
 For Gemma-facing grounding, Brave `llm/context` is the primary source because it returns query-focused snippets already selected for LLM consumption. Full article fetch is used only when those snippets are missing or too thin to support a verdict.
 
+Web evidence source trust is controlled by `configs/source_policy.yaml`. The policy assigns source tiers, blocks known low-quality domains, sets compact Brave LLM context defaults, and weights ranking by source trust, semantic relevance, recency, and content quality before evidence is passed to Gemma.
+
 This is driven by:
 
-- `llm_client.py` for relevance, extraction, classification, search-query generation, and verdict generation
+- `llm_client.py` for extraction, classification, search-query generation, and verdict generation
 - `input_adapters.py` for URL fetch/cleanup and OCR-service image normalization
-- `orchestrator.py` for the reusable normalized-text flow and F1 relevance gate
+- `orchestrator.py` for the reusable normalized-text flow and early-return handling
 - `retrieval.py` for local fact lookup against the SQLite knowledge base
 - `web_search.py` for Brave Search API access
-- `web_evidence.py` for article fetching and evidence ranking
+- `source_policy.py` and `web_evidence.py` for article fetching, source-tier filtering, and evidence ranking
 
 ## Response Shape
 
@@ -105,7 +106,7 @@ It returns:
 - per-claim verdicts
 - unsupported claims
 - a summary string
-- runtime metadata such as run id, timing, warnings, and F1 relevance classification
+- runtime metadata such as run id, timing, warnings, and inferred F1 claim-detection metadata
 
 Each claim verdict records:
 
@@ -118,8 +119,7 @@ Each claim verdict records:
 
 The service also has explicit early-return responses for:
 
-- content that is not related to Formula 1
-- F1-related content with no checkable claim
+- text with no F1-related checkable claim
 
 ## Knowledge Base
 
@@ -137,6 +137,7 @@ Relevant environment variables:
 - `FACT_DB_PATH`
 - `FACT_SOURCE_DATA_DIR`
 - `FACT_METADATA_PATH`
+- `FACT_SOURCE_POLICY_PATH`
 - `JOLPICA_CACHE_DIR`
 - `JOLPICA_BASE_URL`
 - `JOLPICA_TIMEOUT_SECONDS`
@@ -168,4 +169,4 @@ Relevant environment variables:
 
 ## Pipeline Fit
 
-`fact-check-service` is the decision layer between input normalization and final verdict generation. Direct text enters the normalized-text flow immediately; URL and image endpoints normalize their sources first, then reuse the same relevance gate, claim extraction, routing, retrieval, and verdict generation path.
+`fact-check-service` is the decision layer between input normalization and final verdict generation. Direct text enters the normalized-text flow immediately; URL and image endpoints normalize their sources first, then reuse the same claim extraction, routing, retrieval, and verdict generation path.

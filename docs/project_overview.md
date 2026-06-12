@@ -18,8 +18,8 @@ The current product is an F1-specific fact checker, not a general OCR assistant.
 The active verification model is:
 
 1. normalize incoming text, URL content, or OCR output
-2. classify whether the content contains F1-related material
-3. extract checkable claims
+2. extract Formula 1-related checkable claims
+3. return early when no F1-related checkable claim is found
 4. classify each claim into a retrieval route
 5. execute structured retrieval, web retrieval, or both
 6. generate per-claim verdicts from the evidence
@@ -46,12 +46,11 @@ The web app is the user-facing entry point. It serves the browser UI, manages gu
 
 This is the center of the system. It owns:
 
-- F1 relevance gating
 - claim extraction
 - claim classification
 - route planning
 - structured retrieval from the local F1 knowledge base
-- web retrieval through Brave search/context plus evidence ranking
+- web retrieval through Brave search/context plus source-policy evidence ranking
 - verdict generation and final response aggregation
 
 It exposes the main verification endpoints for text, URL, and image inputs.
@@ -69,7 +68,7 @@ This service converts uploaded images into plain text using Paddle OCR. Its scop
 The project currently uses two evidence routes:
 
 - `structured`: local F1 knowledge database backed by SQLite plus vector retrieval
-- `web`: Brave `llm/context` grounding with optional article fetch, normalization, and ranking
+- `web`: Brave `llm/context` grounding with optional article fetch, normalization, source-policy filtering, and ranking
 
 Claims may use one route, both routes, or be marked unsupported when the system cannot retrieve reliable evidence.
 

@@ -26,6 +26,7 @@ from .schemas import (
     VerdictLabel,
     VerificationStream,
 )
+from .source_policy import load_source_policy
 from .web_evidence import (
     WebEvidence,
     fetch_article_texts,
@@ -81,17 +82,6 @@ class FactCheckOrchestrator:
         timings: dict[str, int] = {}
         warnings: list[str] = []
 
-        gate_response, relevance = self.apply_relevance_gate(
-            request.text,
-            input_type=request.input_type,
-            request_meta=request.meta,
-            started=started,
-            timings=timings,
-            warnings=warnings,
-        )
-        if gate_response is not None:
-            return gate_response
-
         extract_started = time.perf_counter()
         extracted_claims = self.llm_client.extract_claims(request.text, max_claims=request.max_claims)
         timings["claim_extraction"] = _elapsed_ms(extract_started)
@@ -99,10 +89,10 @@ class FactCheckOrchestrator:
             timings["total"] = _elapsed_ms(started)
             return _early_response(
                 request.text,
-                reason="no_checkable_claims",
-                summary="F1-related content found, but no checkable claim detected.",
+                reason="no_f1_related_claim_found",
+                summary="No F1-related claim found",
                 timings=timings,
-                relevance=relevance,
+                relevance=_inferred_relevance(False),
                 warnings=warnings,
                 input_type=request.input_type,
                 request_meta=request.meta,
@@ -147,46 +137,10 @@ class FactCheckOrchestrator:
                 "warnings": warnings,
                 "timings_ms": timings,
                 "route_counts": _route_counts(plans),
-                "f1_relevance": relevance.model_dump(mode="json"),
+                "f1_relevance": _inferred_relevance(True).model_dump(mode="json"),
             },
         )
         return response
-
-    def apply_relevance_gate(
-        self,
-        text: str,
-        *,
-        input_type: CheckInputType = CheckInputType.TEXT,
-        request_meta: dict[str, object] | None = None,
-        started: float | None = None,
-        timings: dict[str, int] | None = None,
-        warnings: list[str] | None = None,
-    ) -> tuple[FinalCheckResponse | None, F1RelevanceResult]:
-        gate_started = started if started is not None else time.perf_counter()
-        timing_payload = timings if timings is not None else {}
-        warning_payload = warnings if warnings is not None else []
-
-        relevance_started = time.perf_counter()
-        relevance = self.llm_client.classify_f1_relevance(text)
-        timing_payload["f1_relevance_classification"] = _elapsed_ms(relevance_started)
-
-        if relevance.label != F1RelevanceLabel.NOT_F1_RELATED:
-            return None, relevance
-
-        timing_payload["total"] = _elapsed_ms(gate_started)
-        return (
-            _early_response(
-                text,
-                reason="not_f1_related",
-                summary="This content is not related to Formula 1. No fact-check was performed.",
-                timings=timing_payload,
-                relevance=relevance,
-                warnings=warning_payload,
-                input_type=input_type,
-                request_meta=request_meta or {},
-            ),
-            relevance,
-        )
 
     def _build_execution_plans(
         self,
@@ -279,9 +233,10 @@ class FactCheckOrchestrator:
             timings["web_evidence_normalization"] = 0
             timings["web_evidence_ranking"] = 0
         else:
+            source_policy = load_source_policy(self.config.source_policy_path)
             normalize_started = time.perf_counter()
             normalized_by_query = {
-                query: normalize_search_results(results)
+                query: normalize_search_results(results, source_policy=source_policy)
                 for query, results in search_results_by_query.items()
             }
             timings["web_evidence_normalization"] = _elapsed_ms(normalize_started)
@@ -299,7 +254,11 @@ class FactCheckOrchestrator:
                     query,
                     results,
                     article_texts_by_query.get(query, {}),
-                    top_n=min(3, self.config.brave_search_count),
+                    top_n=min(
+                        source_policy.evidence_limit("max_sources_per_claim", 8),
+                        self.config.brave_search_count,
+                    ),
+                    source_policy=source_policy,
                 )
                 for query, results in normalized_by_query.items()
             }
@@ -462,8 +421,15 @@ def _web_evidence_item(index: int, item: WebEvidence) -> EvidenceItem:
         snippet=item.text[:600],
         url=item.url,
         source_id=item.source,
+        published_at=item.published_at,
         score=item.score,
-        meta={"text": item.text, "source": item.source, "grounded_by": "brave_llm_context"},
+        meta={
+            "text": item.text,
+            "source": item.source,
+            "domain": item.source,
+            "source_tier": item.source_tier,
+            "grounded_by": "brave_llm_context",
+        },
     )
 
 
@@ -606,6 +572,20 @@ def _summary(verdicts: list[ClaimVerdict], unsupported: list[ClassifiedClaim]) -
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def _inferred_relevance(has_claims: bool) -> F1RelevanceResult:
+    if has_claims:
+        return F1RelevanceResult(
+            label=F1RelevanceLabel.F1_RELATED,
+            confidence=None,
+            reason="Inferred from extracted F1-related claims; no separate relevance check was run.",
+        )
+    return F1RelevanceResult(
+        label=F1RelevanceLabel.NOT_F1_RELATED,
+        confidence=None,
+        reason="No F1-related checkable claims were extracted; no separate relevance check was run.",
+    )
 
 
 def _float_or_none(value: Any) -> float | None:

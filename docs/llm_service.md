@@ -13,7 +13,6 @@ This service does not implement fact-checking logic itself. Its job is to:
 
 In the current F1 system, `fact-check-service` uses this block as the LLM backend for prompt workflows such as:
 
-- F1 relevance classification
 - claim extraction
 - claim classification and routing
 - search-query generation for web claims
@@ -67,7 +66,6 @@ Current prompt categories:
 - `claim_classification.md`
 - `search_query_generation.md`
 - `verdict_generation.md`
-- `f1_relevance_classification.md`
 
 The service itself is prompt-agnostic. It simply forwards the request text to `llama-server` and returns the generated answer. The JSON parsing, routing, and evidence logic live in `fact-check-service`.
 
@@ -123,4 +121,3 @@ The service does not know anything about structured facts, Brave Search, or F1 r
 - It does not validate prompt output shape beyond forwarding model responses.
 - JSON reliability depends on the prompt discipline enforced by `fact-check-service`.
 - URL and image handling are not part of this service; they are normalized upstream before prompt execution.
-

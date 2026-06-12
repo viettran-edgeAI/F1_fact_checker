@@ -316,7 +316,7 @@ def verdict_matches(expected: str, actual: dict[str, Any]) -> bool:
     if expected == "unsupported":
         return verdict == "NOT_ENOUGH_INFO"
     if expected == "not_f1":
-        return verdict == "NOT_ENOUGH_INFO" and reason == "not_f1_related"
+        return verdict == "NOT_ENOUGH_INFO" and reason == "no_f1_related_claim_found"
     if expected == "mixed":
         return len(claim_verdicts) > 1 or verdict in {"REFUTES", "NOT_ENOUGH_INFO"}
     return expected == verdict

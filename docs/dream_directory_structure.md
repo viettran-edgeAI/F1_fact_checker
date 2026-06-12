@@ -74,7 +74,6 @@ F1_fact_checker/
 │
 ├── prompts/
 │   ├── claim_extraction.md
-│   ├── f1_relevance_classification.md
 │   ├── claim_classification.md
 │   ├── search_query_generation.md
 │   ├── verdict_generation.md

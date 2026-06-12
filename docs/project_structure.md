@@ -54,12 +54,12 @@ This document describes the current repository layout only. It intentionally sta
 │   │   ├── orchestrator.py
 │   │   ├── retrieval.py
 │   │   ├── schemas.py
+│   │   ├── source_policy.py
 │   │   ├── web_evidence.py
 │   │   ├── web_search.py
 │   │   ├── prompts/
 │   │   │   ├── claim_classification.md
 │   │   │   ├── claim_extraction.md
-│   │   │   ├── f1_relevance_classification.md
 │   │   │   ├── search_query_generation.md
 │   │   │   └── verdict_generation.md
 │   │   └── knowledge/
@@ -126,7 +126,7 @@ This document describes the current repository layout only. It intentionally sta
 | `docs/` | Active project and module documentation. |
 | `requirements/` | Python dependency sets split by runtime service. |
 | `scripts/` | Local helper scripts for knowledge-base build, sync, OCR checks, and pipeline inspection. |
-| `src/fact_check_service/` | F1 fact-check orchestration, routing, retrieval, and verdict generation. |
+| `src/fact_check_service/` | F1 fact-check orchestration, routing, source-policy handling, retrieval, and verdict generation. |
 | `src/fact_check_service/knowledge/` | Local knowledge-base build, storage, embeddings, vector index, and retrieval helpers. |
 | `src/llm_service/` | FastAPI wrapper around local `llama-server` / Gemma inference. |
 | `src/ocr_service/` | Image-only OCR service used to normalize screenshots into text. |

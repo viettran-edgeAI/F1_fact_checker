@@ -26,8 +26,6 @@ from fact_check_service.schemas import (
     EvidenceItem,
     EvidenceSourceType,
     ExtractedClaim,
-    F1RelevanceLabel,
-    F1RelevanceResult,
     RetrievalRoute,
     TextCheckRequest,
     URLCheckRequest,
@@ -35,6 +33,7 @@ from fact_check_service.schemas import (
     VerificationStream,
 )
 from fact_check_service.web_evidence import WebEvidence
+from fact_check_service.web_evidence import normalize_search_results, rank_evidence_candidates
 from fact_check_service.web_search import BraveSearchClient, BraveSearchConfig
 
 
@@ -43,22 +42,17 @@ class FakeLLM:
         self,
         route: VerificationStream | None,
         verdict: str = "true",
-        relevance: F1RelevanceLabel = F1RelevanceLabel.F1_RELATED,
         no_claims: bool = False,
         extracted_claims: list[str] | None = None,
         route_by_claim: dict[str, VerificationStream] | None = None,
     ) -> None:
         self.route = route
         self.verdict = verdict
-        self.relevance = relevance
         self.no_claims = no_claims
         self.extracted_claims = extracted_claims
         self.route_by_claim = route_by_claim or {}
         self.search_queries: list[str] = []
         self.extraction_calls = 0
-
-    def classify_f1_relevance(self, text: str) -> F1RelevanceResult:
-        return F1RelevanceResult(label=self.relevance, confidence=0.9, reason="test")
 
     def extract_claims(self, text: str, *, max_claims: int = 8) -> list[ExtractedClaim]:
         self.extraction_calls += 1
@@ -233,9 +227,9 @@ def test_unsupported_claim_route_skips_retrieval() -> None:
     assert response.claims[0].meta["verified_by"] == "none"
 
 
-def test_not_f1_related_returns_early_without_extraction_or_retrieval() -> None:
+def test_no_f1_related_claim_returns_early_without_retrieval() -> None:
     calls: dict[str, int] = {"structured": 0, "web_search": 0}
-    fake_llm = FakeLLM(VerificationStream.STRUCTURED, relevance=F1RelevanceLabel.NOT_F1_RELATED)
+    fake_llm = FakeLLM(VerificationStream.STRUCTURED, no_claims=True)
     orchestrator = FactCheckOrchestrator(
         config=FactCheckConfig.from_env(),
         llm_client=fake_llm,
@@ -247,16 +241,16 @@ def test_not_f1_related_returns_early_without_extraction_or_retrieval() -> None:
     response = orchestrator.check_text(TextCheckRequest(text="The stock market rose today."))
 
     assert response.verdict == VerdictLabel.NOT_ENOUGH_INFO
-    assert response.summary == "This content is not related to Formula 1. No fact-check was performed."
-    assert response.meta["reason"] == "not_f1_related"
+    assert response.summary == "No F1-related claim found"
+    assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.claims == []
     assert calls == {"structured": 0, "web_search": 0}
-    assert fake_llm.extraction_calls == 0
+    assert fake_llm.extraction_calls == 1
 
 
-def test_normalized_url_not_f1_related_returns_early_with_url_metadata() -> None:
+def test_normalized_url_without_f1_claim_returns_early_with_url_metadata() -> None:
     calls: dict[str, int] = {"structured": 0, "web_search": 0, "web_fetch": 0}
-    fake_llm = FakeLLM(VerificationStream.STRUCTURED, relevance=F1RelevanceLabel.NOT_F1_RELATED)
+    fake_llm = FakeLLM(VerificationStream.STRUCTURED, no_claims=True)
     orchestrator = FactCheckOrchestrator(
         config=FactCheckConfig.from_env(),
         llm_client=fake_llm,
@@ -270,12 +264,12 @@ def test_normalized_url_not_f1_related_returns_early_with_url_metadata() -> None
     )
 
     assert response.verdict == VerdictLabel.NOT_ENOUGH_INFO
-    assert response.summary == "This content is not related to Formula 1. No fact-check was performed."
+    assert response.summary == "No F1-related claim found"
     assert response.meta["input_type"] == "url"
-    assert response.meta["reason"] == "not_f1_related"
+    assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.claims == []
     assert calls == {"structured": 0, "web_search": 0, "web_fetch": 0}
-    assert fake_llm.extraction_calls == 0
+    assert fake_llm.extraction_calls == 1
 
 
 def test_normalized_image_f1_claim_runs_pipeline_with_image_metadata() -> None:
@@ -426,6 +420,35 @@ def test_brave_llm_context_normalizes_grounding_snippets_for_gemma() -> None:
     assert results[0]["source"] == "Formula1"
 
 
+def test_source_policy_tiers_and_filters_web_evidence() -> None:
+    results = normalize_search_results(
+        [
+            {
+                "title": "Official FIA decision",
+                "url": "https://www.fia.com/news/f1-decision",
+                "snippet": "FIA decision on a Formula 1 penalty.",
+            },
+            {
+                "title": "Forum rumor",
+                "url": "https://reddit.com/r/formula1/example",
+                "snippet": "A Formula 1 rumor from social media.",
+            },
+        ],
+    )
+
+    ranked = rank_evidence_candidates(
+        "FIA Formula 1 penalty decision",
+        results,
+        {},
+        top_n=2,
+    )
+
+    assert ranked[0].source == "fia.com"
+    assert ranked[0].source_tier == "official"
+    assert ranked[1].source_tier == "social_forum"
+    assert ranked[0].score > ranked[1].score
+
+
 def test_include_evidence_false_suppresses_all_evidence_arrays() -> None:
     def structured_retriever(claim: ClassifiedClaim, limit: int) -> list[dict[str, object]]:
         return [
@@ -461,7 +484,7 @@ def test_include_evidence_false_suppresses_all_evidence_arrays() -> None:
 def test_check_text_forces_text_input_type_metadata() -> None:
     orchestrator = FactCheckOrchestrator(
         config=FactCheckConfig.from_env(),
-        llm_client=FakeLLM(VerificationStream.STRUCTURED, relevance=F1RelevanceLabel.NOT_F1_RELATED),
+        llm_client=FakeLLM(VerificationStream.STRUCTURED, no_claims=True),
         structured_retriever=lambda claim, limit: [],
         web_searcher=lambda query, count: [],
         web_evidence_fetcher=lambda query, results: [],
@@ -473,14 +496,14 @@ def test_check_text_forces_text_input_type_metadata() -> None:
 
     assert response.verdict == VerdictLabel.NOT_ENOUGH_INFO
     assert response.meta["input_type"] == "text"
-    assert response.meta["reason"] == "not_f1_related"
+    assert response.meta["reason"] == "no_f1_related_claim_found"
 
 
 def test_url_endpoint_normalizes_text_and_uses_url_gate_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_from_env() -> FactCheckOrchestrator:
         return FactCheckOrchestrator(
             config=FactCheckConfig.from_env(),
-            llm_client=FakeLLM(VerificationStream.STRUCTURED, relevance=F1RelevanceLabel.NOT_F1_RELATED),
+            llm_client=FakeLLM(VerificationStream.STRUCTURED, no_claims=True),
             structured_retriever=lambda claim, limit: [],
             web_searcher=lambda query, count: [],
             web_evidence_fetcher=lambda query, results: [],
@@ -501,7 +524,7 @@ def test_url_endpoint_normalizes_text_and_uses_url_gate_metadata(monkeypatch: py
 
     assert response.text == "The stock market rose today."
     assert response.meta["input_type"] == "url"
-    assert response.meta["reason"] == "not_f1_related"
+    assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.meta["session_id"] == "session-url"
     assert response.meta["source_url"] == "https://example.com/not-f1"
     assert response.meta["url_metadata"]["bytes_read"] == 128
@@ -566,8 +589,8 @@ def test_f1_related_without_checkable_claims_returns_early() -> None:
     response = orchestrator.check_text(TextCheckRequest(text="Formula 1 is exciting to watch."))
 
     assert response.verdict == VerdictLabel.NOT_ENOUGH_INFO
-    assert response.summary == "F1-related content found, but no checkable claim detected."
-    assert response.meta["reason"] == "no_checkable_claims"
+    assert response.summary == "No F1-related claim found"
+    assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.claims == []
     assert calls == {"structured": 0, "web_search": 0}
 

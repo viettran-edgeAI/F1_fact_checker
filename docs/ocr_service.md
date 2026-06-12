@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`ocr-service` is the private image-to-text backend used by the F1 fact-check pipeline. Its job is to turn a screenshot or other image upload into plain text that downstream services can normalize, classify, and verify.
+`ocr-service` is the private image-to-text backend used by the F1 fact-check pipeline. Its job is to turn a screenshot or other image upload into plain text that downstream services can normalize, extract claims from, and verify.
 
 Current scope is intentionally narrow:
 
@@ -96,7 +96,7 @@ Model directories default under `~/models/ocr/` unless overridden by the OCR run
 ## Limitations
 
 - Only image input is supported.
-- The service does not perform claim extraction, F1 relevance classification, or fact verification.
+- The service does not perform claim extraction, F1 claim filtering, or fact verification.
 - It does not handle PDF ingestion or document-layout assistant behavior.
 - Output quality depends on the underlying OCR model and the visual quality of the input image.
 
@@ -106,7 +106,7 @@ Model directories default under `~/models/ocr/` unless overridden by the OCR run
 
 1. `web-app` or another client sends an image to `POST /v1/ocr`
 2. `ocr-service` returns extracted text
-3. `fact-check-service` cleans and classifies that text
+3. `fact-check-service` cleans that text and extracts F1-related checkable claims
 4. `llm-service` and the knowledge/web retrieval stack perform verification
 
 In the current F1 stack, this service is a private dependency, not a user-facing product surface.

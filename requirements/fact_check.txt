@@ -3,6 +3,7 @@ python-multipart==0.0.20
 uvicorn[standard]==0.34.0
 httpx==0.28.1
 pydantic==2.10.6
+PyYAML==6.0.2
 numpy==1.26.4
 onnxruntime==1.19.2
 tokenizers==0.21.0

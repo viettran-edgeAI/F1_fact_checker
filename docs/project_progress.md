@@ -11,10 +11,10 @@ The repository refactor is substantially complete. The application now has an en
 - OCR service is now image-only and returns structured text output.
 - Local Formula 1 knowledge database build and Jolpica sync are in place.
 - Multi-claim route planning is implemented in `fact-check-service` for structured, web, mixed, and unsupported claims.
-- F1 relevance gating and early-return handling are implemented for non-F1 and non-checkable text.
-- URL and image endpoints now normalize inputs into clean text and reuse the same F1 relevance gate.
+- Claim extraction now acts as the F1 filter by extracting only Formula 1-related checkable claims.
+- URL and image endpoints now normalize inputs into clean text and reuse the same extraction-driven early return.
 - Structured retrieval now combines SQLite lookup with FAISS/vector search support.
-- Web retrieval now runs as explicit sub-stages: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, and ranking.
+- Web retrieval now runs as explicit sub-stages: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, source-policy filtering, and ranking.
 - The public web app has been restructured around the fact-check flow.
 - The documentation set has been rebuilt around the current four-service architecture.
 
@@ -26,14 +26,12 @@ The current implementation covers the main pipeline represented in the README fl
 - image input is sent to `ocr-service` and normalized into clean text
 - URL input is fetched and converted into visible text
 - all input paths reuse `fact-check-service.check_normalized_text`
-- Gemma performs F1 relevance classification
-- non-F1 content returns early with the standard no-fact-check response
-- F1-related content proceeds to claim extraction
-- no-checkable-claim content returns early
+- Gemma extracts F1-related checkable claims directly
+- text with no F1-related checkable claim returns `No F1-related claim found`
 - extracted claims are classified into `structured`, `web`, `mixed`, or `unsupported`
 - claim plans derive `required_routes` internally
 - structured claims retrieve local SQLite + FAISS evidence
-- web claims use Brave `llm/context` grounding plus optional fetched/ranked article evidence
+- web claims use Brave `llm/context` grounding plus optional fetched/ranked article evidence filtered by `configs/source_policy.yaml`
 - mixed claims execute both route phases and consolidate evidence back per claim
 - Gemma generates verdicts from the retrieved evidence
 - the service aggregates claim verdicts into the final fact-check response

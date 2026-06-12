@@ -10,26 +10,13 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .source_policy import SourcePolicy, load_source_policy
+
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_USER_AGENT = "F1-fact-checker/0.1"
 MAX_ARTICLE_CHARS = 12_000
 MIN_DIRECT_SNIPPET_CHARS = 280
-
-RELIABLE_DOMAIN_WEIGHTS = {
-    "formula1.com": 4.0,
-    "fia.com": 4.0,
-    "f1.com": 4.0,
-    "reuters.com": 3.0,
-    "apnews.com": 3.0,
-    "bbc.com": 2.5,
-    "espn.com": 2.0,
-    "skysports.com": 2.0,
-    "motorsport.com": 2.0,
-    "autosport.com": 2.0,
-    "racer.com": 1.5,
-    "the-race.com": 1.5,
-}
 
 STOPWORDS = {
     "a",
@@ -66,6 +53,8 @@ class WebEvidence:
     source: str
     text: str
     score: float
+    source_tier: str = "unknown"
+    published_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +64,8 @@ class NormalizedSearchResult:
     snippet: str
     source: str
     published_at: str | None = None
+    source_tier: str = "unknown"
+    source_trust: float = 0.45
 
 
 class _VisibleTextParser(HTMLParser):
@@ -184,7 +175,12 @@ def fetch_ranked_evidence_from_results(
     return sorted(evidence, key=lambda item: item.score, reverse=True)[:top_n]
 
 
-def normalize_search_results(results: list[dict[str, Any]]) -> list[NormalizedSearchResult]:
+def normalize_search_results(
+    results: list[dict[str, Any]],
+    *,
+    source_policy: SourcePolicy | None = None,
+) -> list[NormalizedSearchResult]:
+    policy = source_policy or load_source_policy()
     normalized_results: list[NormalizedSearchResult] = []
     for result in results:
         normalized = _normalize_result(result)
@@ -192,13 +188,19 @@ def normalize_search_results(results: list[dict[str, Any]]) -> list[NormalizedSe
         url = str(normalized.get("url") or "").strip()
         if not title or not url.startswith(("http://", "https://")):
             continue
+        hostname = _hostname(url)
+        if policy.is_blocked(hostname):
+            continue
+        tier = policy.tier_for_domain(hostname)
         normalized_results.append(
             NormalizedSearchResult(
                 title=title,
                 url=url,
                 snippet=_clean_text(str(normalized.get("description") or "")),
-                source=_hostname(url),
+                source=hostname,
                 published_at=str(normalized.get("published_at") or "") or None,
+                source_tier=tier.name,
+                source_trust=tier.trust_score,
             )
         )
     return normalized_results
@@ -233,7 +235,9 @@ def rank_evidence_candidates(
     article_texts: dict[str, str],
     *,
     top_n: int = 3,
+    source_policy: SourcePolicy | None = None,
 ) -> list[WebEvidence]:
+    policy = source_policy or load_source_policy()
     ranked: list[WebEvidence] = []
     for index, result in enumerate(results):
         text = article_texts.get(result.url) or result.snippet
@@ -252,7 +256,11 @@ def rank_evidence_candidates(
                     snippet=result.snippet,
                     text=text,
                     result_index=index,
+                    source_policy=policy,
+                    published_at=result.published_at,
                 ),
+                source_tier=result.source_tier,
+                published_at=result.published_at,
             )
         )
     return sorted(ranked, key=lambda item: item.score, reverse=True)[:top_n]
@@ -282,19 +290,30 @@ def rank_article(
     snippet: str = "",
     text: str = "",
     result_index: int = 0,
+    source_policy: SourcePolicy | None = None,
+    published_at: str | None = None,
 ) -> float:
     query_terms = _tokenize(query)
     if not query_terms:
         return 0.0
 
+    policy = source_policy or load_source_policy()
     weighted_text = f"{title} {title} {snippet} {snippet} {text[:3000]}"
     article_terms = set(_tokenize(weighted_text))
-    overlap = len(query_terms & article_terms) / max(len(query_terms), 1)
-    source_score = _source_reliability(_hostname(url))
-    position_score = max(0.0, 1.0 - (result_index * 0.08))
-    text_score = min(len(text) / 2500.0, 1.0)
+    semantic_relevance = len(query_terms & article_terms) / max(len(query_terms), 1)
+    source_trust = policy.tier_for_url(url).trust_score
+    recency = _recency_score(published_at)
+    content_quality = min(len(text) / 2500.0, 1.0)
+    position_bonus = max(0.0, 0.05 - (result_index * 0.005))
 
-    return round((overlap * 6.0) + source_score + position_score + text_score, 4)
+    score = (
+        source_trust * policy.weight("source_trust", 0.45)
+        + semantic_relevance * policy.weight("semantic_relevance", 0.30)
+        + recency * policy.weight("recency", 0.15)
+        + content_quality * policy.weight("content_quality", 0.10)
+        + position_bonus
+    )
+    return round(score, 4)
 
 
 def _brave_results(
@@ -346,7 +365,8 @@ def _article_evidence(
         return None
 
     score = rank_article(query, title=title, url=url, snippet=snippet, text=text, result_index=result_index)
-    return WebEvidence(title=title, url=url, source=_hostname(url), text=text, score=score)
+    tier = load_source_policy().tier_for_url(url)
+    return WebEvidence(title=title, url=url, source=_hostname(url), text=text, score=score, source_tier=tier.name)
 
 
 def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -373,20 +393,25 @@ def _fetch_article_text(client: httpx.Client, url: str, timeout_seconds: float) 
     return extract_visible_text(response.text)
 
 
-def _source_reliability(hostname: str) -> float:
-    if not hostname:
-        return 0.0
-    if hostname.endswith(".gov") or hostname.endswith(".edu"):
-        return 2.0
-    for domain, weight in RELIABLE_DOMAIN_WEIGHTS.items():
-        if hostname == domain or hostname.endswith(f".{domain}"):
-            return weight
-    return 0.5
-
-
 def _hostname(url: str) -> str:
     hostname = urlparse(url).hostname or ""
     return hostname.lower().removeprefix("www.")
+
+
+def _recency_score(published_at: str | None) -> float:
+    if not published_at:
+        return 0.5
+    year_match = re.search(r"\b(20\d{2}|19\d{2})\b", published_at)
+    if not year_match:
+        return 0.5
+    year = int(year_match.group(1))
+    if year >= 2025:
+        return 1.0
+    if year >= 2022:
+        return 0.8
+    if year >= 2010:
+        return 0.6
+    return 0.4
 
 
 def _tokenize(value: str) -> set[str]:
