@@ -42,7 +42,7 @@ claim execution planning
 ↓
 structured route phase
 ↓
-web route phase
+web route phase with Brave llm/context + source policy
 ↓
 claim evidence consolidation
 ↓
@@ -64,27 +64,32 @@ flowchart TD
 
     C --> F[Clean normalized text]
 
-    F --> I[Gemma: extract F1-related checkable claims]
+    F --> G[Gemma: extract checkable F1 claims - (instant)]
 
-    I --> J{Any checkable claims?}
+    G --> H{Any checkable claims?}
 
-    J -->|No| K[Return<br/>No F1-related claim found]
+    H -->|No| I[Return<br/>No F1-related claim found]
 
-    J -->|Yes| L[Gemma: classify each claim]
+    H -->|Yes| J[Gemma: classify each claim - (instant)]
 
-    L --> M[Claim list with required routes]
+    J --> K[Gemma: claim execution planning - (instant)]
 
-    M --> N[Structured route phase<br/>SQLite exact / FTS + FAISS semantic]
-    M --> O[Web route phase<br/>query generation -> Brave llm/context -> optional fetch -> normalize -> rank]
+    K --> L[Claim list with required routes]
 
-    N --> P[Claim evidence consolidation]
-    O --> P
+    L --> M[Structured route phase<br/>SQLite exact / FTS + FAISS semantic]
 
-    P --> Q[Gemma: generate verdict per claim]
+    L --> N[Web route phase<br/>query generation -> Brave llm/context<br/>+ source_policy.yaml filtering/ranking]
 
-    Q --> U[Aggregate all claim verdicts]
+    M --> O[Claim evidence consolidation]
+    N --> O
 
-    U --> V[Final fact-check result<br/>Overall verdict + claim verdicts + evidence]
+    O --> P[Gemma: generate verdict per claim - (instant/thinking)]
+
+    P --> Q[Claim-level verdict]
+
+    Q --> R[Gemma: aggregate final result - (thinking)]
+
+    R --> S[Final fact-check result<br/>Overall verdict + claim verdicts + evidence]
 ```
 
 `fact-check-service` exposes text, URL, and image endpoints. URL and image
