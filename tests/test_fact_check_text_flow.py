@@ -245,7 +245,7 @@ def test_no_f1_related_claim_returns_early_without_retrieval() -> None:
     assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.claims == []
     assert calls == {"structured": 0, "web_search": 0}
-    assert fake_llm.extraction_calls == 1
+    assert fake_llm.extraction_calls == 0
 
 
 def test_normalized_url_without_f1_claim_returns_early_with_url_metadata() -> None:
@@ -269,7 +269,7 @@ def test_normalized_url_without_f1_claim_returns_early_with_url_metadata() -> No
     assert response.meta["reason"] == "no_f1_related_claim_found"
     assert response.claims == []
     assert calls == {"structured": 0, "web_search": 0, "web_fetch": 0}
-    assert fake_llm.extraction_calls == 1
+    assert fake_llm.extraction_calls == 0
 
 
 def test_normalized_image_f1_claim_runs_pipeline_with_image_metadata() -> None:

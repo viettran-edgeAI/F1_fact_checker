@@ -168,13 +168,24 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        match = re.search(r"\{[\s\S]*\}", cleaned)
-        if not match:
+        payload = _extract_first_json_object(cleaned)
+        if payload is None:
             raise LLMClientError("LLM response did not contain JSON.") from exc
-        payload = json.loads(match.group(0))
     if not isinstance(payload, dict):
         raise LLMClientError("LLM response JSON must be an object.")
     return payload
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            payload, _end = decoder.raw_decode(text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _route(value: Any) -> VerificationStream:

@@ -4,7 +4,7 @@ Date: 2026-06-08
 
 ## Current Status
 
-The repository refactor is substantially complete. The application now has an end-to-end path for text, URL, and image fact-checking, including staged multi-claim and multi-route orchestration. The remaining work is integration hardening around retrieval quality, URL normalization, and broader end-to-end validation.
+The repository refactor is substantially complete. The application now has an end-to-end path for text, URL, and image fact-checking, including staged multi-claim and multi-route orchestration. The current live text pipeline has been validated against the JSONL F1 fact-check case suite through Docker-backed `llm-service`, `fact-check-service`, OCR dependency startup, local DB retrieval, and Brave-backed web retrieval.
 
 ## Completed
 
@@ -15,8 +15,11 @@ The repository refactor is substantially complete. The application now has an en
 - URL and image endpoints now normalize inputs into clean text and reuse the same extraction-driven early return.
 - Structured retrieval now combines SQLite lookup with FAISS/vector search support.
 - Web retrieval now runs as explicit sub-stages: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, source-policy filtering, and ranking.
+- Docker Compose now mounts `configs/` into `fact-check-service` and sets `FACT_FAISS_INDEX_PATH` so the container loads the existing FAISS index instead of rebuilding vectors on first structured retrieval.
+- Deterministic route and verdict safeguards are in place for stable local-DB patterns covered by the regression suite, including race winners, championship winners, driver title counts, driver/team/season checks, and known circuit facts.
 - The public web app has been restructured around the fact-check flow.
 - The documentation set has been rebuilt around the current four-service architecture.
+- Live JSONL pipeline run completed with `27 pass, 0 warn, 0 fail, 0 error` using `tests/f1_fact_check_test_cases.jsonl`.
 
 ## README Flowchart Alignment
 
@@ -48,7 +51,7 @@ The implementation is therefore functionally complete for the major flow, but no
 - Continue end-to-end smoke testing across web app, OCR, LLM, fact-check, and Brave integration.
 - Add Brave-assisted URL fetch fallback if the README behavior should remain the target.
 - Improve clean-text normalization for URL boilerplate and OCR artifacts.
-- Harden web evidence extraction and ranking for more edge cases.
+- Continue hardening web evidence extraction and ranking for more edge cases outside the current regression suite.
 - Keep the knowledge database build and sync flow reproducible.
 
 ## Current Direction

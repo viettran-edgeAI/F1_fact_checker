@@ -47,6 +47,7 @@ services:
       - "8082:8082"
     volumes:
       - ./src:/app/src:ro
+      - ./configs:/app/configs:ro
       - ./data:/data
       - ${HOME}/models:/models:ro
     environment:
@@ -54,7 +55,9 @@ services:
       LLM_SERVICE_URL: http://llm-service:8081
       FACT_DB_PATH: ${FACT_DB_PATH:-/data/knowledge_db/f1.sqlite}
       FACT_SOURCE_DATA_DIR: ${FACT_SOURCE_DATA_DIR:-/data/F1_WC_data}
+      FACT_FAISS_INDEX_PATH: ${FACT_FAISS_INDEX_PATH:-/data/knowledge_db/faiss.index}
       FACT_METADATA_PATH: ${FACT_METADATA_PATH:-/data/knowledge_db/fact_metadata.jsonl}
+      FACT_SOURCE_POLICY_PATH: ${FACT_SOURCE_POLICY_PATH:-/app/configs/source_policy.yaml}
       JOLPICA_CACHE_DIR: ${JOLPICA_CACHE_DIR:-/data/source_data/jolpica_cache}
       JOLPICA_BASE_URL: ${JOLPICA_BASE_URL:-https://api.jolpi.ca/ergast/f1}
       JOLPICA_TIMEOUT_SECONDS: ${JOLPICA_TIMEOUT_SECONDS:-20}

@@ -25,15 +25,18 @@ The service is a FastAPI app with a narrow HTTP surface. The currently active en
 The normalized clean-text flow is:
 
 1. normalize input text
-2. extract Formula 1-related checkable claims
-3. return early if no F1-related checkable claim is found
-4. classify each claim and derive internal `required_routes`
-5. build route worklists for structured and web execution
-6. run the structured route phase for every claim that requires local evidence
-7. run the web route phase for every claim that requires internet evidence
-8. consolidate route evidence back into per-claim bundles
-9. generate claim verdicts with Gemma
-10. aggregate the final verdict and response metadata
+2. apply a lightweight deterministic F1-signal guard for obvious non-F1 text
+3. extract Formula 1-related checkable claims
+4. return early if no F1-related checkable claim is found
+5. classify each claim and derive internal `required_routes`
+6. apply deterministic route safeguards for known structured, web, and mixed claim patterns
+7. build route worklists for structured and web execution
+8. run the structured route phase for every claim that requires local evidence
+9. run the web route phase for every claim that requires internet evidence
+10. consolidate route evidence back into per-claim bundles
+11. use deterministic structured verdicts for high-confidence local DB patterns when available
+12. generate remaining claim verdicts with Gemma
+13. aggregate the final verdict and response metadata
 
 The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text uses the same claim extraction, routing, retrieval, and early-return behavior.
 
@@ -86,6 +89,8 @@ For Gemma-facing grounding, Brave `llm/context` is the primary source because it
 
 Web evidence source trust is controlled by `configs/source_policy.yaml`. The policy assigns source tiers, blocks known low-quality domains, sets compact Brave LLM context defaults, and weights ranking by source trust, semantic relevance, recency, and content quality before evidence is passed to Gemma.
 
+For stable historical/statistical claims, the service uses deterministic structured checks before asking Gemma for a verdict when the claim matches supported local DB patterns such as race winners, Drivers' Championship winners, driver title counts, driver/team/season associations, and known circuit facts. This avoids turning straightforward database lookups into model-dependent verdicts.
+
 This is driven by:
 
 - `llm_client.py` for extraction, classification, search-query generation, and verdict generation
@@ -136,6 +141,7 @@ Relevant environment variables:
 
 - `FACT_DB_PATH`
 - `FACT_SOURCE_DATA_DIR`
+- `FACT_FAISS_INDEX_PATH`
 - `FACT_METADATA_PATH`
 - `FACT_SOURCE_POLICY_PATH`
 - `JOLPICA_CACHE_DIR`
