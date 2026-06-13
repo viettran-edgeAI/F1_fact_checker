@@ -25,3 +25,4 @@ scripts/*
 !scripts/sync_jolpica.py
 !scripts/inspect_fact.py
 !scripts/smoke_ocr_service.py
+.codex/
