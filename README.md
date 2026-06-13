@@ -25,7 +25,7 @@ The current verification model extracts all checkable claims first, then execute
 retrieval by route before consolidating evidence back into claim verdicts:
 
 - structured factual claims use the local Formula 1 knowledge database with SQLite + FAISS-backed retrieval
-- news / drama / statement claims use Brave `llm/context` grounding first, then optional article fetch, normalization, and ranking
+- news / drama / statement claims complete missing claim context before web query generation, then use Brave `llm/context`, article fetch, normalization, and ranking
 - mixed claims require both structured and web routes
 
 The current text flow is:
@@ -40,9 +40,11 @@ claim classification per claim
 ↓
 claim execution planning
 ↓
+claim context completion for executable structured / web / mixed claims
+↓
 structured route phase
 ↓
-web route phase with Brave llm/context + source policy
+web route phase with Brave llm/context + article fetch + source policy
 ↓
 claim evidence consolidation
 ↓
@@ -76,9 +78,11 @@ flowchart TD
 
     K --> L["Claim list with required routes"]
 
-    L --> M["Structured route phase<br/>SQLite exact / FTS + FAISS semantic"]
+    L --> U["Gemma: complete claim context<br/>structured + web + mixed claims"]
 
-    L --> N["Web route phase<br/>query generation -> Brave llm/context"]
+    U --> M["Structured route phase<br/>SQLite exact / FTS + FAISS semantic"]
+
+    U --> N["Web route phase<br/>query generation -> Brave llm/context"]
 
     N --> O["Apply source_policy.yaml<br/>filtering + tier scoring + ranking"]
 
