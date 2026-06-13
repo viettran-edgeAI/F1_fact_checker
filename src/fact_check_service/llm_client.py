@@ -93,7 +93,7 @@ class LLMClient:
     def classify_claims(self, claims: list[ExtractedClaim], *, context: str = "") -> list[ClassifiedClaim]:
         return [self.classify_claim(claim, context=context) for claim in claims]
 
-    def rewrite_structured_claims(
+    def complete_claim_contexts(
         self,
         claims: list[ClassifiedClaim],
         *,
@@ -110,7 +110,7 @@ class LLMClient:
         )
         rewritten = payload.get("claims", [])
         if not isinstance(rewritten, list):
-            raise LLMClientError("Structured claim rewrite returned invalid claims array.")
+            raise LLMClientError("Claim context completion returned invalid claims array.")
         claims_by_id: dict[str, str] = {}
         for item in rewritten:
             if not isinstance(item, dict):
@@ -120,6 +120,14 @@ class LLMClient:
             if claim_id and text:
                 claims_by_id[claim_id] = text
         return claims_by_id
+
+    def rewrite_structured_claims(
+        self,
+        claims: list[ClassifiedClaim],
+        *,
+        context: str = "",
+    ) -> dict[str, str]:
+        return self.complete_claim_contexts(claims, context=context)
 
     def generate_search_query(self, claim: ClassifiedClaim, *, context: str = "") -> str:
         payload = self._run_json_prompt(
@@ -382,15 +390,18 @@ def _required_routes(route: VerificationStream) -> list[RetrievalRoute]:
     return []
 
 
-def _compact_evidence(items: list[dict[str, Any]], *, max_items: int = 4, max_snippet_chars: int = 400) -> list[dict[str, Any]]:
+def _compact_evidence(items: list[dict[str, Any]], *, max_items: int = 4, max_snippet_chars: int = 1200) -> list[dict[str, Any]]:
     compacted: list[dict[str, Any]] = []
     for item in items[:max_items]:
+        meta = item.get("meta")
+        meta_text = meta.get("text") if isinstance(meta, dict) else ""
+        snippet = str(item.get("snippet") or item.get("text") or meta_text or "")
         compacted.append(
             {
                 "evidence_id": item.get("evidence_id"),
                 "source_type": item.get("source_type"),
                 "title": item.get("title"),
-                "snippet": str(item.get("snippet") or "")[:max_snippet_chars],
+                "snippet": snippet[:max_snippet_chars],
                 "url": item.get("url"),
                 "source_id": item.get("source_id"),
                 "score": item.get("score"),

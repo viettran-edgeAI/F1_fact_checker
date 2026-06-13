@@ -952,7 +952,7 @@ def _session_status_for_stream_event(event_name: str, data: dict[str, Any]) -> s
     stage = str(data.get("stage") or event_name.removesuffix("_started"))
     if stage in {"url_fetch", "ocr"}:
         return "preprocessing"
-    if stage in {"claim_extraction", "claim_classification", "route_planning"}:
+    if stage in {"claim_extraction", "claim_classification", "route_planning", "claim_context_completion"}:
         return "extracting_claims"
     if stage in {"structured_retrieval", "web_retrieval", "evidence_consolidation"}:
         return "retrieving_evidence"

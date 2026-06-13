@@ -21,7 +21,7 @@ The active verification model is:
 2. extract Formula 1-related checkable claims
 3. return early when no F1-related checkable claim is found
 4. classify each claim into a retrieval route
-5. rewrite and normalize structured-route claims before local retrieval when needed
+5. complete claim context after route planning and before retrieval so executable claims keep source context
 6. execute structured retrieval, web retrieval, or both
 7. generate per-claim verdicts from the evidence
 8. stream backend stage events and live Gemma verdict tokens to the browser when the streaming endpoints are used
@@ -51,7 +51,7 @@ This is the center of the system. It owns:
 - claim extraction
 - claim classification
 - route planning
-- Gemma-based structured-claim rewrite / normalization before local retrieval
+- Gemma-based claim context completion before local or web retrieval
 - structured retrieval from the local F1 knowledge base
 - web retrieval through Brave search/context plus source-policy evidence ranking
 - verdict generation and final response aggregation
@@ -71,7 +71,7 @@ This service converts uploaded images into plain text using Paddle OCR. Its scop
 The project currently uses two evidence routes:
 
 - `structured`: local F1 knowledge database backed by SQLite plus vector retrieval
-- `web`: Brave `llm/context` grounding with optional article fetch, normalization, source-policy filtering, and ranking
+- `web`: Brave `llm/context` grounding with article fetch for normalized top candidates, normalization, source-policy filtering, and ranking
 
 Claims may use one route, both routes, or be marked unsupported when the system cannot retrieve reliable evidence.
 

@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
 from fact_check_service.config import FactCheckConfig
 from fact_check_service import main as fact_check_main
 from fact_check_service.input_adapters import AdapterText
-from fact_check_service.llm_client import LLMClient
+from fact_check_service.llm_client import LLMClient, _compact_evidence
 from fact_check_service.main import check_text
 from fact_check_service.orchestrator import FactCheckOrchestrator
 from fact_check_service.schemas import (
@@ -34,7 +34,7 @@ from fact_check_service.schemas import (
     VerificationStream,
 )
 from fact_check_service.web_evidence import WebEvidence
-from fact_check_service.web_evidence import normalize_search_results, rank_evidence_candidates
+from fact_check_service.web_evidence import fetch_article_texts, normalize_search_results, rank_evidence_candidates
 from fact_check_service.web_search import BraveSearchClient, BraveSearchConfig
 
 
@@ -94,7 +94,7 @@ class FakeLLM:
     def classify_claims(self, claims: list[ExtractedClaim], *, context: str = "") -> list[ClassifiedClaim]:
         return [self.classify_claim(claim, context=context) for claim in claims]
 
-    def rewrite_structured_claims(
+    def complete_claim_contexts(
         self,
         claims: list[ClassifiedClaim],
         *,
@@ -105,6 +105,14 @@ class FakeLLM:
             claim.claim_id: self.rewritten_claims.get(claim.claim_id, claim.text)
             for claim in claims
         }
+
+    def rewrite_structured_claims(
+        self,
+        claims: list[ClassifiedClaim],
+        *,
+        context: str = "",
+    ) -> dict[str, str]:
+        return self.complete_claim_contexts(claims, context=context)
 
     def generate_search_query(self, claim: ClassifiedClaim, *, context: str = "") -> str:
         self.search_queries.append(claim.text)
@@ -296,7 +304,7 @@ def test_structured_claim_route_uses_local_retrieval() -> None:
     assert response.claims[0].meta["verified_by"] == "local_knowledge_database"
 
 
-def test_structured_claim_rewrite_runs_after_planning_and_before_retrieval() -> None:
+def test_claim_context_completion_runs_after_planning_and_before_structured_retrieval() -> None:
     seen_queries: list[str] = []
 
     def structured_retriever(claim: ClassifiedClaim, limit: int) -> list[dict[str, object]]:
@@ -335,7 +343,69 @@ def test_structured_claim_rewrite_runs_after_planning_and_before_retrieval() -> 
     assert fake_llm.rewrite_calls == [["C1"]]
     assert "2023 Formula 1 Constructors' Championship" in response.claims[0].claim.text
     assert "2023 Formula 1 Constructors' Championship" in seen_queries[0]
-    assert response.meta["timings_ms"]["structured_claim_rewrite"] >= 0
+    assert response.meta["timings_ms"]["claim_context_completion"] >= 0
+
+
+def test_claim_context_completion_updates_web_claim_before_query_generation() -> None:
+    seen_queries: list[str] = []
+
+    def web_search(query: str, count: int) -> list[dict[str, object]]:
+        seen_queries.append(query)
+        return [
+            {
+                "title": "Ferrari lineup report",
+                "url": "https://example.com/ferrari-lineup",
+                "snippet": "Ferrari has not confirmed a driver lineup change.",
+            }
+        ]
+
+    def web_fetch(query: str, results: list[dict[str, object]]) -> list[WebEvidence]:
+        return [
+            WebEvidence(
+                title="Ferrari lineup report",
+                url="https://example.com/ferrari-lineup",
+                source="example.com",
+                text="Ferrari has not confirmed a driver lineup change.",
+                score=4.2,
+            )
+        ]
+
+    fake_llm = FakeLLM(
+        VerificationStream.WEB,
+        extracted_claims=["No official team statement has confirmed the story."],
+        rewritten_claims={
+            "C1": "No official Ferrari team statement has confirmed the reported future driver lineup disagreement."
+        },
+    )
+    orchestrator = FactCheckOrchestrator(
+        config=FactCheckConfig.from_env(),
+        llm_client=fake_llm,
+        structured_retriever=lambda claim, limit: [],
+        web_searcher=web_search,
+        web_evidence_fetcher=web_fetch,
+    )
+
+    response = orchestrator.check_text(
+        TextCheckRequest(
+            text=(
+                "Ferrari is facing internal disagreement over its future driver lineup. "
+                "No official team statement has confirmed the story."
+            )
+        )
+    )
+
+    assert fake_llm.rewrite_calls == [["C1"]]
+    assert response.claims[0].claim.text == (
+        "No official Ferrari team statement has confirmed the reported future driver lineup disagreement."
+    )
+    assert fake_llm.search_queries == [
+        "No official Ferrari team statement has confirmed the reported future driver lineup disagreement."
+    ]
+    assert seen_queries == [
+        "No official Ferrari team statement has confirmed the reported future driver lineup disagreement. source"
+    ]
+    assert response.claims[0].claim.meta["claim_context_completed"] is True
+    assert response.claims[0].claim.meta["structured_claim_rewritten"] is False
 
 
 def test_web_claim_route_uses_brave_and_web_evidence() -> None:
@@ -655,6 +725,63 @@ def test_source_policy_tiers_and_filters_web_evidence() -> None:
     assert ranked[0].source_tier == "official"
     assert ranked[1].source_tier == "social_forum"
     assert ranked[0].score > ranked[1].score
+
+
+def test_web_evidence_fetches_article_text_even_with_long_context_snippet() -> None:
+    results = normalize_search_results(
+        [
+            {
+                "title": "F1 team driver lineup report",
+                "url": "https://example.com/f1-lineup",
+                "snippet": " ".join(["Long Brave context snippet"] * 40),
+            }
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.com/f1-lineup"
+        html = """
+        <html><head><title>F1 team driver lineup report</title></head>
+        <body>
+          <article>
+            <p>Article body says the team principal denied there was any split over the lineup.</p>
+            <p>The report also says no official signing announcement has been made.</p>
+          </article>
+        </body></html>
+        """
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=html)
+
+    with httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+        article_texts = fetch_article_texts(results, client=client)
+
+    assert "team principal denied" in article_texts["https://example.com/f1-lineup"]
+    assert "official signing announcement" in article_texts["https://example.com/f1-lineup"]
+
+
+def test_compact_evidence_keeps_article_body_context_for_verdict_prompt() -> None:
+    article_body = (
+        "Lead sentence. "
+        + ("Background sentence. " * 30)
+        + "Deep article context says the reported split was denied by the team principal."
+    )
+    compacted = _compact_evidence(
+        [
+            {
+                "evidence_id": "W1",
+                "source_type": "web",
+                "title": "F1 team driver lineup report",
+                "snippet": "",
+                "url": "https://example.com/f1-lineup",
+                "source_id": "example.com",
+                "score": 0.8,
+                "meta": {"text": article_body},
+            }
+        ]
+    )
+
+    assert compacted[0]["title"] == "F1 team driver lineup report"
+    assert "Deep article context" in compacted[0]["snippet"]
+    assert len(str(compacted[0]["snippet"])) <= 1200
 
 
 def test_include_evidence_false_suppresses_all_evidence_arrays() -> None:

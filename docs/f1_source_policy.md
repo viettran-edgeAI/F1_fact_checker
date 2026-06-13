@@ -186,6 +186,8 @@ Specialist motorsport sources are acceptable, but official sources should overri
 
 After applying the source policy, normalize each result into a compact object before sending to Gemma:
 
+When compacting evidence, prefer readable article text over title-only snippets. The current fact-check flow allows longer snippets and falls back to `item.text` / `meta.text` when `snippet` is empty so article-body content survives into the final packet.
+
 ```json
 {
   "claim_id": "claim_001",

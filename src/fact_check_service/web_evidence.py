@@ -16,7 +16,6 @@ from .source_policy import SourcePolicy, load_source_policy
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_USER_AGENT = "F1-fact-checker/0.1"
 MAX_ARTICLE_CHARS = 12_000
-MIN_DIRECT_SNIPPET_CHARS = 280
 
 STOPWORDS = {
     "a",
@@ -221,12 +220,11 @@ def fetch_article_texts(
         texts = {
             result.url: _fetch_article_text(http_client, result.url, timeout_seconds)
             for result in results
-            if len(result.snippet.strip()) < MIN_DIRECT_SNIPPET_CHARS
         }
     finally:
         if owns_client:
             http_client.close()
-    return texts
+    return {url: text for url, text in texts.items() if text}
 
 
 def rank_evidence_candidates(

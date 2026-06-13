@@ -7,8 +7,10 @@
 This block is the center of the current F1 pipeline:
 
 - structured factual claims are checked against the local Formula 1 knowledge database with SQLite exact / FTS plus FAISS semantic retrieval
-- structured-route claims now pass through a Gemma rewrite / normalization step before structured retrieval so standalone claims keep season, year, race, and team context from the source text
-- news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, source-policy filtering, and ranking
+- executable claims now pass through a Gemma claim context completion step after route planning and before retrieval so standalone text keeps season, year, race, team, and story context from the source text
+- structured and mixed claims refresh `structured_query` when that completed text changes for local retrieval
+- web and mixed claims use the completed standalone claim text before search-query generation
+- news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, article fetch for every normalized top candidate, evidence normalization, source-policy filtering, and ranking
 - mixed claims require both structured and web evidence routes
 - unsupported claims are returned with an explainable `NOT_ENOUGH_INFO` outcome
 
@@ -37,9 +39,9 @@ The normalized clean-text flow is:
 5. classify each claim and derive internal `required_routes`
 6. apply deterministic route safeguards for known structured, web, and mixed claim patterns
 7. build route worklists for structured and web execution
-8. run the Gemma structured-claim rewrite / normalization step for claims that require local evidence
-9. run the structured route phase for every claim that requires local evidence
-10. run the web route phase for every claim that requires internet evidence
+8. run claim context completion for executable claims before retrieval
+9. run the structured route phase for every claim that requires local evidence, refreshing `structured_query` when the completed text changes
+10. run the web route phase for every claim that requires internet evidence, using the completed standalone claim text before search-query generation
 11. consolidate route evidence back into per-claim bundles
 12. use deterministic structured verdicts for high-confidence local DB patterns when available
 13. generate remaining claim verdicts with Gemma using request-level thinking control, streaming verdict tokens when the `/stream` endpoints are used
@@ -80,6 +82,8 @@ The service uses `required_routes` as its internal routing source of truth:
 - `mixed` is the compatibility label for claims that require both routes
 - `unsupported` means the claim requires no retrieval routes and returns `NOT_ENOUGH_INFO`
 
+Claim context completion happens only for executable claims, not for `unsupported` claims.
+
 The structured route executes:
 
 - SQLite exact / keyword retrieval
@@ -90,13 +94,15 @@ The web route executes:
 
 - search-query generation
 - Brave `llm/context` grounding
-- optional article fetch
+- article fetch for each normalized top candidate
 - evidence normalization
 - source-policy filtering and evidence ranking
 
-For Gemma-facing grounding, Brave `llm/context` is the primary source because it returns query-focused snippets already selected for LLM consumption. Full article fetch is used only when those snippets are missing or too thin to support a verdict.
+For Gemma-facing grounding, Brave `llm/context` is still the primary source because it returns query-focused snippets already selected for LLM consumption. The article-fetch stage now attempts readable-text extraction for every normalized top candidate and keeps only non-empty fetched bodies; Brave snippets remain as fallback ranking input when the fetch does not yield usable text.
 
 Web evidence source trust is controlled by `configs/source_policy.yaml`. The policy assigns source tiers, blocks known low-quality domains, sets compact Brave LLM context defaults, and weights ranking by source trust, semantic relevance, recency, and content quality before evidence is passed to Gemma.
+
+Evidence compaction now allows snippets up to 1200 characters and falls back to `item.text` / `meta.text` when `snippet` is empty, so Gemma sees article-body content instead of title-only evidence.
 
 For stable historical/statistical claims, the service uses deterministic structured checks before asking Gemma for a verdict when the claim matches supported local DB patterns such as race winners, Drivers' Championship winners, driver title counts, driver/team/season associations, and known circuit facts. This avoids turning straightforward database lookups into model-dependent verdicts.
 

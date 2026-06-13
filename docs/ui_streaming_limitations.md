@@ -14,7 +14,7 @@ The browser renders the real backend stage sequence as it arrives, so the visibl
 
 - claim extraction
 - claim classification
-- structured-claim rewrite / normalization
+- claim context completion (`claim_context_completion`)
 - structured knowledge database retrieval
 - Brave/web evidence retrieval
 - Gemma verdict generation

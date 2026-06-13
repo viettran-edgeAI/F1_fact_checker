@@ -99,7 +99,7 @@ Key environment variables:
 - `LLAMA_SERVER_URL`: base URL when connecting to an existing server
 - `LLM_HOST` / `LLM_PORT`: bind address for the FastAPI wrapper
 - `LLM_MODEL_ALIAS`: model label returned in responses
-- `LLM_CTX_SIZE`: context window size passed to `llama-server`
+- `LLM_CTX_SIZE`: context window size passed to `llama-server`; Docker Compose currently sets this to `12288` so verdict prompts can carry richer compacted web evidence
 - `LLM_MAX_TOKENS`: default output cap for fast mode
 - `LLM_THINKING_MAX_TOKENS` or `LLM_MAX_TOKENS_THINKING`: default output cap for thinking mode
 - `LLM_TEMPERATURE`, `LLM_TOP_P`, `LLM_TOP_K`: generation controls

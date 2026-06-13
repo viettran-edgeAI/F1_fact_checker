@@ -110,7 +110,7 @@ const SERVER_STAGE_LABELS = {
   claim_extraction: { label: "Extracting F1 claims", detail: "Gemma is extracting Formula 1-related checkable claims." },
   claim_classification: { label: "Classifying claims", detail: "Gemma is selecting structured, web, mixed, or unsupported routes." },
   route_planning: { label: "Planning execution", detail: "The backend is building per-claim retrieval worklists." },
-  structured_claim_rewrite: { label: "Completing structured claims", detail: "Gemma is adding missing context for local-data claims." },
+  claim_context_completion: { label: "Completing claim context", detail: "Gemma is making planned claims standalone before retrieval." },
   structured_retrieval: { label: "Checking local records", detail: "The backend is searching SQLite/FTS and FAISS evidence." },
   web_retrieval: { label: "Gathering web evidence", detail: "The backend is using Brave grounding and source-policy ranking." },
   evidence_consolidation: { label: "Consolidating evidence", detail: "The backend is merging evidence back into claim bundles." },

@@ -176,21 +176,21 @@ class FactCheckOrchestrator:
             route_counts=_route_counts(plans),
         )
 
-        rewrite_started = time.perf_counter()
+        completion_started = time.perf_counter()
         _emit(
             event_callback,
-            "structured_claim_rewrite_started",
-            stage="structured_claim_rewrite",
+            "claim_context_completion_started",
+            stage="claim_context_completion",
             status="started",
         )
-        plans = self._rewrite_structured_claims(plans, context=request.text, warnings=warnings)
-        timings["structured_claim_rewrite"] = _elapsed_ms(rewrite_started)
+        plans = self._complete_claim_contexts(plans, context=request.text, warnings=warnings)
+        timings["claim_context_completion"] = _elapsed_ms(completion_started)
         _emit(
             event_callback,
-            "structured_claim_rewrite_finished",
-            stage="structured_claim_rewrite",
+            "claim_context_completion_finished",
+            stage="claim_context_completion",
             status="finished",
-            elapsed_ms=timings["structured_claim_rewrite"],
+            elapsed_ms=timings["claim_context_completion"],
         )
 
         structured_started = time.perf_counter()
@@ -303,27 +303,29 @@ class FactCheckOrchestrator:
             plans.append(ClaimExecutionPlan(claim=normalized_claim, required_routes=required_routes))
         return plans
 
-    def _rewrite_structured_claims(
+    def _complete_claim_contexts(
         self,
         plans: list[ClaimExecutionPlan],
         *,
         context: str,
         warnings: list[str],
     ) -> list[ClaimExecutionPlan]:
-        structured_claims = [
+        executable_claims = [
             plan.claim
             for plan in plans
-            if RetrievalRoute.STRUCTURED in plan.required_routes
-            and plan.claim.verification_stream != VerificationStream.UNSUPPORTED
+            if plan.required_routes and plan.claim.verification_stream != VerificationStream.UNSUPPORTED
         ]
-        if not structured_claims:
+        if not executable_claims:
             return plans
         try:
-            rewritten_by_id = self.llm_client.rewrite_structured_claims(structured_claims, context=context)
+            rewrite_fn = getattr(self.llm_client, "complete_claim_contexts", None)
+            if rewrite_fn is None:
+                rewrite_fn = getattr(self.llm_client, "rewrite_structured_claims")
+            rewritten_by_id = rewrite_fn(executable_claims, context=context)
         except AttributeError:
             return plans
         except (LLMClientError, httpx.HTTPError) as exc:
-            warnings.append(f"Structured claim rewrite failed; using original claim text: {exc}")
+            warnings.append(f"Claim context completion failed; using original claim text: {exc}")
             return plans
 
         rewritten_plans: list[ClaimExecutionPlan] = []
@@ -336,11 +338,16 @@ class FactCheckOrchestrator:
                 update={
                     "text": rewritten_text,
                     "normalized_text": rewritten_text,
-                    "structured_query": _rewrite_structured_query(plan.claim, rewritten_text),
+                    "structured_query": (
+                        _rewrite_structured_query(plan.claim, rewritten_text)
+                        if RetrievalRoute.STRUCTURED in plan.required_routes
+                        else plan.claim.structured_query
+                    ),
                     "meta": {
                         **plan.claim.meta,
                         "original_extracted_text": plan.claim.text,
-                        "structured_claim_rewritten": True,
+                        "claim_context_completed": True,
+                        "structured_claim_rewritten": RetrievalRoute.STRUCTURED in plan.required_routes,
                     },
                 }
             )
