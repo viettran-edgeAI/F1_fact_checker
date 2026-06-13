@@ -170,17 +170,17 @@ class OCRRuntimeConfig:
                 or os.environ.get("OCR_TEXTLINE_ORI_MODEL_DIR")
                 or default_model_dir("PP-LCNet_x0_25_textline_ori_infer")
             ),
-            det_model_name="PP-OCRv5_mobile_det",
+            det_model_name="PP-OCRv6_small_det",
             det_model_dir=Path(
                 det_model_dir
                 or os.environ.get("OCR_DET_MODEL_DIR")
-                or default_model_dir("PP-OCRv5_mobile_det_infer")
+                or default_model_dir("PP-OCRv6_small_det_infer")
             ),
-            rec_model_name="PP-OCRv5_mobile_rec",
+            rec_model_name="PP-OCRv6_small_rec",
             rec_model_dir=Path(
                 rec_model_dir
                 or os.environ.get("OCR_REC_MODEL_DIR")
-                or default_model_dir("PP-OCRv5_mobile_rec_infer")
+                or default_model_dir("PP-OCRv6_small_rec_infer")
             ),
             layout_detection_model_name=os.environ.get("OCR_LAYOUT_MODEL_NAME", "PP-DocLayout_plus-L"),
             layout_detection_model_dir=Path(

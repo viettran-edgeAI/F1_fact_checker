@@ -9,7 +9,7 @@ This service does not implement fact-checking logic itself. Its job is to:
 - start or attach to `llama-server`
 - forward chat-completion style requests to the local model
 - apply the current thinking-mode policy
-- return answer text, optional reasoning text, token usage, and timing metadata
+- return answer text, optional reasoning text, token usage, throughput, and timing metadata
 
 In the current F1 system, `fact-check-service` uses this block as the LLM backend for prompt workflows such as:
 
@@ -25,7 +25,7 @@ At startup, the service either:
 - launches `llama-server` locally with the configured GGUF model, or
 - connects to an already running external `llama-server` when `LLM_EXTERNAL_LLAMA_SERVER=1`
 
-On readiness, it exposes a small HTTP surface for other services to call. The F1 stack currently uses the non-streaming answer endpoint for strict JSON prompt workflows.
+On readiness, it exposes a small HTTP surface for other services to call. The F1 stack uses the non-streaming answer endpoint for strict JSON prompt workflows and the streaming answer endpoint for live verdict generation.
 
 ## Endpoints
 
@@ -42,6 +42,7 @@ Accepts:
 - `conversation_history`: bounded chat history
 - `max_tokens`: optional override
 - `thinking_mode`: `fast` or `thinking`
+- `enable_thinking`: optional explicit request-level override; when set, it takes precedence over legacy `thinking_mode`
 
 Returns:
 
@@ -50,11 +51,12 @@ Returns:
 - `model`
 - `elapsed_ms`
 - token usage fields when available
+- `tokens_per_second` when the backend can compute it
 - OCR context metadata such as `ocr_chars` and `ocr_truncated`
 
 ### `POST /v1/answer/stream`
 
-Streams completion chunks and usage metadata. This is available for interactive consumers, but the current fact-check pipeline uses the non-streaming endpoint.
+Streams completion chunks and usage metadata. The final `done` event includes `tokens_per_second` when the backend can compute it. The fact-check pipeline uses this endpoint for live verdict generation, while the blocking endpoint remains available for strict JSON prompt workflows.
 
 ## Prompt Workflow Support
 
@@ -71,18 +73,21 @@ The service itself is prompt-agnostic. It simply forwards the request text to `l
 
 ## Thinking Mode
 
-`thinking_mode` is a per-request toggle with two behaviors:
+Thinking control is request-level. New callers should send `enable_thinking` directly; the legacy `thinking_mode` field remains supported for compatibility.
 
-- `fast`: disables template thinking and instructs the model to provide only the final answer
-- `thinking`: allows concise reasoning output when the global thinking-disable flag is not set
+`enable_thinking=false` / `thinking_mode=fast`:
 
-High-level behavior:
+- disables template thinking with `chat_template_kwargs={"enable_thinking": false}`
+- instructs the model to return only the final answer
 
-- fast requests always set `chat_template_kwargs={"enable_thinking": false}`
-- thinking requests omit that override unless `LLM_DISABLE_THINKING=1`
-- if thinking is globally disabled, the service falls back to fast-mode behavior
+`enable_thinking=true` / `thinking_mode=thinking`:
 
-This matters for the F1 pipeline because the downstream JSON prompts are executed in fast mode and should return compact, parseable answers.
+- omits the template override so the model can use thinking when the global thinking-disable flag is not set
+- uses the thinking token default unless `max_tokens` is explicitly supplied
+
+If `LLM_DISABLE_THINKING=1`, all requests fall back to non-thinking behavior. The explicit `max_tokens` override accepts values up to 4096.
+
+In the F1 pipeline, claim extraction, claim classification, web query generation, and verdict generation use non-thinking request mode. Verdict generation is intentionally compact so the final aggregation step does not spend context on unnecessary reasoning or evidence-by-evidence prose.
 
 ## Configuration
 
@@ -112,8 +117,13 @@ Key environment variables:
 - stable JSON-oriented answers for extraction/classification prompts
 - predictable fast-mode behavior for parsing
 - optional `reasoning_text` support without breaking the final `answer`
+- optional throughput metadata such as `tokens_per_second` for runtime reporting, including streamed verdict generation
 
 The service does not know anything about structured facts, Brave Search, or F1 routing. Those decisions are made in `fact-check-service`, which supplies the prompts and interprets the responses.
+
+## GPU Runtime
+
+Docker Compose runs `llm-service` with the NVIDIA runtime and `NVIDIA_VISIBLE_DEVICES=all`. `LLM_GPU_LAYERS` must be greater than zero for Gemma inference to use CUDA offload. On the current Jetson Orin deployment, the stable setting while `ocr-service` is resident on the same GPU is `LLM_GPU_LAYERS=8`; larger values can fail model loading because OCR and LLM share the 8 GB memory budget.
 
 ## Limitations
 

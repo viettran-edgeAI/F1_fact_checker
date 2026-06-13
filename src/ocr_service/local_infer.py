@@ -233,10 +233,10 @@ def main() -> None:
         model_dirs = [
             Path(args.det_model_dir).expanduser().resolve()
             if args.det_model_dir
-            else _default_model_dir("PP-OCRv5_mobile_det_infer"),
+            else _default_model_dir("PP-OCRv6_small_det_infer"),
             Path(args.rec_model_dir).expanduser().resolve()
             if args.rec_model_dir
-            else _default_model_dir("PP-OCRv5_mobile_rec_infer"),
+            else _default_model_dir("PP-OCRv6_small_rec_infer"),
             _default_model_dir("PP-LCNet_x0_25_textline_ori_infer"),
             _default_model_dir("PP-LCNet_x1_0_doc_ori_infer"),
             _default_model_dir("UVDoc_infer"),

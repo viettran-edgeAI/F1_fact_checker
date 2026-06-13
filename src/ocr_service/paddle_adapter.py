@@ -113,6 +113,7 @@ class PaddleRuntime:
                 "PaddleOCR is not available in this environment. Install the OCR service dependencies first."
             ) from exc
 
+        _register_ppocr_v6_small_aliases()
         self._classes = {
             "doc_orientation": DocImgOrientationClassification,
             "doc_unwarping": TextImageUnwarping,
@@ -125,17 +126,16 @@ class PaddleRuntime:
         }
         return self._classes
 
-    @staticmethod
-    def _model_name(attr: str) -> str:
+    def _model_name(self, attr: str) -> str:
         return {
             "doc_orientation": "PP-LCNet_x1_0_doc_ori",
             "doc_unwarping": "UVDoc",
             "layout_detection": "PP-DocLayout_plus-L",
             "region_detection": "PP-DocBlockLayout",
             "formula_recognition": "PP-FormulaNet_plus-S",
-            "text_detection": "PP-OCRv5_mobile_det",
+            "text_detection": self.config.det_model_name,
             "textline_orientation": "PP-LCNet_x0_25_textline_ori",
-            "text_recognition": "PP-OCRv5_mobile_rec",
+            "text_recognition": self.config.rec_model_name,
         }[attr]
 
     def _get_module(self, attr: str, model_dir: Path) -> Any | None:
@@ -203,3 +203,24 @@ class PaddleRuntime:
         if not crops or module is None:
             return []
         return _maybe_predict(module, crops, batch_size=batch_size)
+
+
+def _register_ppocr_v6_small_aliases() -> None:
+    """Allow local PP-OCRv6 small inference dirs on PaddleX builds without v6 registry entries."""
+    try:
+        from paddlex.inference.models.bindings.registry import default_registry
+    except Exception:
+        return
+
+    registry = getattr(default_registry, "_registry", None)
+    if not isinstance(registry, dict):
+        return
+
+    alias_pairs = {
+        "PP-OCRv6_small_det": "PP-OCRv5_mobile_det",
+        "PP-OCRv6_small_rec": "PP-OCRv5_mobile_rec",
+    }
+    for alias, source in alias_pairs.items():
+        if alias in registry or source not in registry:
+            continue
+        registry[alias] = dict(registry[source])

@@ -180,8 +180,8 @@ class OCRModuleBenchmark:
             engine=self.engine,
         )
         self.text_detection_model = TextDetection(
-            model_name="PP-OCRv5_mobile_det",
-            model_dir=str(_default_model_dir("PP-OCRv5_mobile_det")),
+            model_name="PP-OCRv6_small_det",
+            model_dir=str(_default_model_dir("PP-OCRv6_small_det_infer")),
             device=self.device,
             engine=self.engine,
             limit_side_len=self.text_det_limit_side_len,
@@ -194,8 +194,8 @@ class OCRModuleBenchmark:
             engine=self.engine,
         )
         self.text_recognition_model = TextRecognition(
-            model_name="PP-OCRv5_mobile_rec",
-            model_dir=str(_default_model_dir("PP-OCRv5_mobile_rec")),
+            model_name="PP-OCRv6_small_rec",
+            model_dir=str(_default_model_dir("PP-OCRv6_small_rec_infer")),
             device=self.device,
             engine=self.engine,
         )
@@ -426,7 +426,7 @@ def benchmark_images(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark the five PP-OCRv5 component models individually.",
+        description="Benchmark the PP-OCR component models individually.",
     )
     parser.add_argument(
         "input",

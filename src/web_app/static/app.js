@@ -3,9 +3,15 @@ const state = {
   activeSessionId: null,
   pendingFile: null,
   pendingPreviewUrl: null,
+  lastOutputText: "",
   isBusy: false,
   selectedSessionIds: new Set(),
   recentSessionIds: [],
+  progressTimer: null,
+  progressStepIds: [],
+  progressStepIndex: 0,
+  currentStreamStep: null,
+  liveTokenText: "",
   showAllSessions: false,
   account: null,
   accountDetails: null,
@@ -29,13 +35,13 @@ const els = {
   clearButton: document.querySelector("#clearButton"),
   uploadLimitStatus: document.querySelector("#uploadLimitStatus"),
   uploadState: document.querySelector("#uploadState"),
-  progressList: document.querySelector("#progressList"),
   emptyOutput: document.querySelector("#emptyOutput"),
   resultShell: document.querySelector("#resultShell"),
-  overallVerdict: document.querySelector("#overallVerdict"),
-  claimsList: document.querySelector("#claimsList"),
-  claimVerdicts: document.querySelector("#claimVerdicts"),
-  summaryText: document.querySelector("#summaryText"),
+  chatMessages: document.querySelector("#chatMessages"),
+  pipelineTime: document.querySelector("#pipelineTime"),
+  copyOutputButton: document.querySelector("#copyOutputButton"),
+  gemmaRate: document.querySelector("#gemmaRate"),
+  debugDetails: document.querySelector("#debugDetails"),
   debugPayload: document.querySelector("#debugPayload"),
   sessionList: document.querySelector("#sessionList"),
   themeToggle: document.querySelector("#themeToggle"),
@@ -79,6 +85,39 @@ const els = {
   helpCloseButton: document.querySelector("#helpCloseButton"),
 };
 
+const APP_CONFIG = window.F1_FACT_CHECK_CONFIG || {};
+const KNOWLEDGE_SOURCE_LABEL =
+  APP_CONFIG.knowledgeSourceLabel || "Knowledge Database (F1 WC database + F1 Jolpica API)";
+const RECENT_SESSION_TEXT_MAX_CHARS = 110;
+const MAX_EVIDENCE_ITEMS_PER_CLAIM = 4;
+
+const PIPELINE_STEPS = [
+  { id: "preparing_input", label: "Preparing input", detail: "Checking the input before submission." },
+  { id: "submitting_text", label: "Submitting text", detail: "Sending the request to the fact-check service.", modes: ["text"] },
+  { id: "submitting_url", label: "Submitting URL", detail: "Sending the article URL to the fact-check service.", modes: ["url"] },
+  { id: "uploading_image", label: "Uploading screenshot", detail: "Sending the image to the fact-check service.", modes: ["image"] },
+  {
+    id: "waiting_for_result",
+    label: "Waiting for fact-check result",
+    detail: "The backend is running the full pipeline and will return one completed response.",
+  },
+];
+
+const SERVER_STAGE_LABELS = {
+  url_fetch: { label: "Fetching URL text", detail: "The backend is downloading and normalizing the article text." },
+  ocr: { label: "Running OCR", detail: "The backend is converting the screenshot into normalized text." },
+  f1_signal_check: { label: "Checking F1 relevance", detail: "The backend is checking whether the input contains Formula 1 content." },
+  claim_extraction: { label: "Extracting F1 claims", detail: "Gemma is extracting Formula 1-related checkable claims." },
+  claim_classification: { label: "Classifying claims", detail: "Gemma is selecting structured, web, mixed, or unsupported routes." },
+  route_planning: { label: "Planning execution", detail: "The backend is building per-claim retrieval worklists." },
+  structured_claim_rewrite: { label: "Completing structured claims", detail: "Gemma is adding missing context for local-data claims." },
+  structured_retrieval: { label: "Checking local records", detail: "The backend is searching SQLite/FTS and FAISS evidence." },
+  web_retrieval: { label: "Gathering web evidence", detail: "The backend is using Brave grounding and source-policy ranking." },
+  evidence_consolidation: { label: "Consolidating evidence", detail: "The backend is merging evidence back into claim bundles." },
+  verdict_generation: { label: "Generating verdict", detail: "Gemma verdict tokens are streaming live when model generation is needed." },
+  result_aggregation: { label: "Persisting result", detail: "The backend is aggregating and saving the completed result." },
+};
+
 document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   await loadAccountState();
@@ -91,6 +130,7 @@ function bindEvents() {
   });
   on(els.checkButton, "click", submitCheck);
   on(els.clearButton, "click", clearInput);
+  on(els.copyOutputButton, "click", copyOutput);
   on(els.uploadButton, "click", () => els.fileInput.click());
   on(els.fileInput, "change", () => {
     const file = els.fileInput.files?.[0];
@@ -189,26 +229,40 @@ async function submitCheck() {
   if (state.isBusy) return;
   state.isBusy = true;
   setControlsBusy(true);
-  setProgress("preprocessing");
-  setStatus("Preparing input...");
   clearResult();
+  startPipelineProgress(state.mode);
+  setStatus("Preparing input...");
 
   try {
-    const response = await postCurrentInput();
-    const session = await readJsonResponse(response);
+    let session = null;
+    await streamCurrentInput((eventName, data) => {
+      if (eventName === "done") {
+        session = data;
+        return;
+      }
+      handleFactCheckStreamEvent(eventName, data);
+    });
+    if (!session) throw new Error("Fact-check stream ended before returning a result.");
     state.activeSessionId = session.id;
-    renderSession(session);
+    renderSession(session, { animate: false });
     renderRateLimit(session.rate_limit);
     setStatus("Fact-check complete.", "success");
     await loadRecentSessions();
   } catch (error) {
+    stopPipelineProgress();
+    stopRenderProgress();
     setStatus(error.message, "error");
-    els.progressList.hidden = true;
     els.emptyOutput.hidden = false;
   } finally {
+    if (!els.resultShell.hidden) stopPipelineProgress();
     state.isBusy = false;
     setControlsBusy(false);
   }
+}
+
+async function streamCurrentInput(onEvent) {
+  const response = await postCurrentInputStream();
+  await readSseResponse(response, onEvent);
 }
 
 async function postCurrentInput() {
@@ -218,7 +272,6 @@ async function postCurrentInput() {
       els.textInput.focus();
       throw new Error("Text input cannot be empty.");
     }
-    setProgress("extracting_claims");
     return fetch("/sessions/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -231,7 +284,6 @@ async function postCurrentInput() {
       els.urlInput.focus();
       throw new Error("URL input cannot be empty.");
     }
-    setProgress("retrieving_evidence");
     return fetch("/sessions/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -241,63 +293,286 @@ async function postCurrentInput() {
   if (!state.pendingFile) {
     throw new Error("Choose or paste a screenshot first.");
   }
-  setProgress("extracting_claims");
   const body = new FormData();
   body.append("image", state.pendingFile);
   const query = state.activeSessionId ? `?session_id=${encodeURIComponent(state.activeSessionId)}` : "";
   return fetch(`/sessions/check-image${query}`, { method: "POST", body });
 }
 
-function renderSession(session) {
+async function postCurrentInputStream() {
+  if (state.mode === "text") {
+    const text = els.textInput.value.trim();
+    if (!text) {
+      els.textInput.focus();
+      throw new Error("Text input cannot be empty.");
+    }
+    return fetch("/sessions/check/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+      body: JSON.stringify({ input_type: "text", text, session_id: state.activeSessionId }),
+    });
+  }
+  if (state.mode === "url") {
+    const url = els.urlInput.value.trim();
+    if (!url) {
+      els.urlInput.focus();
+      throw new Error("URL input cannot be empty.");
+    }
+    return fetch("/sessions/check/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+      body: JSON.stringify({ input_type: "url", url, session_id: state.activeSessionId }),
+    });
+  }
+  if (!state.pendingFile) {
+    throw new Error("Choose or paste a screenshot first.");
+  }
+  const body = new FormData();
+  body.append("image", state.pendingFile);
+  const query = state.activeSessionId ? `?session_id=${encodeURIComponent(state.activeSessionId)}` : "";
+  return fetch(`/sessions/check-image/stream${query}`, {
+    method: "POST",
+    headers: { "Accept": "text/event-stream" },
+    body,
+  });
+}
+
+function renderSession(session, options = {}) {
   const result = session.fact_check_result;
   if (!result) {
     clearResult();
     return;
   }
+  stopRenderProgress();
   els.emptyOutput.hidden = true;
-  els.progressList.hidden = true;
   els.resultShell.hidden = false;
-  const verdict = String(result.verdict || "NOT_ENOUGH_INFO");
-  els.overallVerdict.textContent = verdict;
-  els.overallVerdict.className = `verdict-pill verdict-${verdict.toLowerCase()}`;
+  els.chatMessages.hidden = false;
+  els.debugDetails.hidden = false;
+  els.pipelineTime.textContent = pipelineTimeLabel(result, session);
+  els.gemmaRate.textContent = gemmaRateLabel(result);
   const claims = Array.isArray(result.claims) ? result.claims : [];
-  els.claimsList.innerHTML = claims.length
-    ? claims.map((item, index) => renderClaimSummary(item, index)).join("")
-    : `<div class="empty-list">No checkable claims were extracted.</div>`;
-  els.claimVerdicts.innerHTML = claims.length
-    ? claims.map(renderClaimVerdict).join("")
-    : `<div class="empty-list">No claim verdicts available.</div>`;
-  els.summaryText.textContent = result.summary || "No final explanation was returned.";
+  const messages = claims.length
+    ? claims.map((item, index) => renderClaimMessage(item, index))
+    : [renderSystemMessage(result.summary || "No information related to F1 could be extracted.")];
+  els.chatMessages.setAttribute("aria-label", "Fact-check result");
+  els.chatMessages.innerHTML = messages.join("");
   els.debugPayload.textContent = JSON.stringify(debugPayload(result), null, 2);
+  state.lastOutputText = outputTextFromResult(result, session);
 }
 
-function renderClaimSummary(item, index) {
+function renderClaimMessage(item, index) {
   const claim = item.claim || {};
+  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+  const evidenceBox = renderEvidenceSummaryBox(evidence);
   return `
-    <div class="claim-row">
-      <span>${escapeHtml(claim.claim_id || `c${String(index + 1).padStart(3, "0")}`)}</span>
-      <p>${escapeHtml(claim.text || "")}</p>
+    <div class="chat-message assistant-message">
+      <div class="message-head">
+        <span>${escapeHtml(claim.claim_id || `C${index + 1}`)}</span>
+        <span class="validity-pill validity-${validityClass(item.verdict)}">${escapeHtml(validityLabel(item.verdict))}</span>
+      </div>
+      <p class="claim-text">${escapeHtml(claim.text || "Claim")}</p>
+      <p><strong>Explanation</strong><br>${escapeHtml(item.rationale || "No claim explanation was returned.")}</p>
+      <div class="evidence-grid">${evidenceBox}</div>
+      <p><strong>Conclusion</strong><br>${escapeHtml(conclusionText(item))}</p>
     </div>
   `;
 }
 
-function renderClaimVerdict(item) {
-  const claim = item.claim || {};
-  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+function renderSystemMessage(message) {
   return `
-    <article class="claim-card">
-      <div class="claim-card-head">
-        <strong>${escapeHtml(claim.text || "Claim")}</strong>
-        <span class="mini-verdict">${escapeHtml(item.verdict || "NOT_ENOUGH_INFO")}</span>
-      </div>
-      <dl>
-        <div><dt>Type</dt><dd>${escapeHtml(claim.claim_type || claim.verification_stream || "unknown")}</dd></div>
-        <div><dt>Confidence</dt><dd>${formatConfidence(item.confidence)}</dd></div>
-        <div><dt>Evidence</dt><dd>${escapeHtml(evidenceSummary(evidence))}</dd></div>
-      </dl>
-      <p>${escapeHtml(item.rationale || "No claim explanation was returned.")}</p>
-    </article>
+    <div class="chat-message assistant-message">
+      <p>${escapeHtml(message)}</p>
+    </div>
   `;
+}
+
+function renderProgressMessage(step, stateClass) {
+  return `
+    <div class="progress-line ${escapeHtml(stateClass)}" data-step="${escapeHtml(step.id)}">
+      <span class="progress-label">
+        ${escapeHtml(step.label)}
+        <span class="progress-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+      </span>
+      <small>${escapeHtml(step.detail)}</small>
+    </div>
+  `;
+}
+
+function renderLiveTokenMessage() {
+  if (!state.liveTokenText) return "";
+  return `
+    <div class="chat-message assistant-message live-token-message">
+      <div class="message-head">
+        <span>Gemma stream</span>
+        <span class="validity-pill">Live</span>
+      </div>
+      <pre class="live-token-text">${escapeHtml(state.liveTokenText)}</pre>
+    </div>
+  `;
+}
+
+function renderLiveStreamView(step, stateClass = "is-active") {
+  state.currentStreamStep = step;
+  els.chatMessages.innerHTML = `${renderProgressMessage(step, stateClass)}${renderLiveTokenMessage()}`;
+  els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+}
+
+function handleFactCheckStreamEvent(eventName, data = {}) {
+  if (eventName === "gemma_token") {
+    appendLiveGemmaToken(data.delta || "");
+    return;
+  }
+  if (eventName.endsWith("_started") || eventName.endsWith("_finished")) {
+    renderServerStage(eventName, data);
+  }
+}
+
+function renderServerStage(eventName, data = {}) {
+  const stageId = data.stage || eventName.replace(/_(started|finished)$/, "");
+  const labels = SERVER_STAGE_LABELS[stageId] || {
+    label: humanizeStage(stageId),
+    detail: "The backend reported a fact-check pipeline event.",
+  };
+  const status = eventName.endsWith("_finished") ? "finished" : "started";
+  const step = {
+    id: stageId,
+    label: status === "finished" ? `${labels.label} complete` : labels.label,
+    detail: labels.detail,
+  };
+  renderLiveStreamView(step, status === "finished" ? "is-done" : "is-active");
+}
+
+function appendLiveGemmaToken(delta) {
+  if (!delta) return;
+  state.liveTokenText += delta;
+  const step = state.currentStreamStep || {
+    id: "verdict_generation",
+    ...SERVER_STAGE_LABELS.verdict_generation,
+  };
+  renderLiveStreamView(step, "is-active");
+}
+
+function renderEvidenceSummaryBox(evidence) {
+  if (!evidence.length) {
+    return `<div class="evidence-box"><strong>Source</strong><p>No evidence source was returned for this claim.</p></div>`;
+  }
+  const visibleEvidence = evidence.slice(0, MAX_EVIDENCE_ITEMS_PER_CLAIM);
+  const topEvidence = visibleEvidence[0];
+  const localCount = visibleEvidence.filter((item) => item.source_type === "local_db").length;
+  const webItems = visibleEvidence.filter((item) => item.source_type === "web");
+  const sourceLabels = [];
+  if (localCount) sourceLabels.push(KNOWLEDGE_SOURCE_LABEL);
+  if (webItems.length) {
+    const domains = [...new Set(webItems.map((item) => item.source_id || item.url || "web source"))].slice(0, 3);
+    sourceLabels.push(`Web evidence: ${domains.join(", ")}`);
+  }
+  const extraItems = visibleEvidence.slice(1);
+  const expandable = evidence.length > 1;
+  return `
+    <details class="evidence-box" ${expandable ? "" : "open"}>
+      <summary>
+        <div>
+          <strong>Source</strong>
+          <p class="evidence-title">${escapeHtml(sourceLabels.join(" + ") || sourceLabelForEvidence(topEvidence))}</p>
+          <p>${escapeHtml(topEvidence.snippet || topEvidence.title || "No summary text was returned.")}</p>
+        </div>
+        <span>${escapeHtml(`${Math.min(evidence.length, MAX_EVIDENCE_ITEMS_PER_CLAIM)} shown${evidence.length > MAX_EVIDENCE_ITEMS_PER_CLAIM ? ` of ${evidence.length}` : ""}`)}</span>
+      </summary>
+      ${extraItems.length ? `<div class="evidence-extra">${extraItems.map(renderEvidenceDetail).join("")}</div>` : ""}
+    </details>
+  `;
+}
+
+function renderEvidenceDetail(item, index) {
+  return `
+    <div class="evidence-detail">
+      <strong>${escapeHtml(`Evidence ${index + 2}`)}</strong>
+      <p>${escapeHtml(sourceLabelForEvidence(item))}</p>
+      <p>${escapeHtml(item.snippet || item.title || "No summary text was returned.")}</p>
+    </div>
+  `;
+}
+
+function sourceLabelForEvidence(item) {
+  if (!item) return "Evidence";
+  if (item.source_type === "local_db") return KNOWLEDGE_SOURCE_LABEL;
+  if (item.source_type === "web") return item.source_id || item.url || "Web evidence";
+  return item.source_id || item.source_type || "Evidence";
+}
+
+function stopRenderProgress() {}
+
+function validityLabel(value) {
+  const normalized = String(value || "NOT_ENOUGH_INFO");
+  if (normalized === "SUPPORTS") return "Valid";
+  if (normalized === "REFUTES") return "Invalid";
+  return "Not enough info";
+}
+
+function validityClass(value) {
+  const normalized = String(value || "NOT_ENOUGH_INFO").toLowerCase();
+  return normalized.replace(/[^a-z0-9_]+/g, "_");
+}
+
+function conclusionText(item) {
+  const label = validityLabel(item.verdict);
+  const confidence = formatConfidence(item.confidence);
+  return `${label}. Confidence: ${confidence}. Source route: ${item.verification_stream || item.claim?.verification_stream || "unknown"}.`;
+}
+
+function pipelineTimeLabel(result, session) {
+  const total = result.meta?.timings_ms?.total ?? session.answer_elapsed_ms;
+  if (!Number.isFinite(Number(total))) return "Pipeline time: unavailable";
+  return `Pipeline time: ${formatDuration(Number(total))}`;
+}
+
+function gemmaRateLabel(result) {
+  const rate = result.meta?.gemma_tokens_per_second;
+  if (!Number.isFinite(Number(rate))) return "";
+  return `Gemma ${Number(rate).toFixed(2)} tok/s`;
+}
+
+function outputTextFromResult(result, session) {
+  const claims = Array.isArray(result.claims) ? result.claims : [];
+  const lines = [pipelineTimeLabel(result, session), gemmaRateLabel(result), "Fact checking system"].filter(Boolean);
+  if (!claims.length) {
+    lines.push(result.summary || "No information related to F1 could be extracted.");
+    return lines.join("\n");
+  }
+  claims.forEach((item, index) => {
+    const claim = item.claim || {};
+    const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+    lines.push("");
+    lines.push(`${claim.claim_id || `C${index + 1}`}: ${claim.text || "Claim"}`);
+    lines.push(`Validity: ${validityLabel(item.verdict)}`);
+    lines.push(`Explanation: ${item.rationale || "No claim explanation was returned."}`);
+    lines.push(`Source: ${plainEvidenceSources(evidence)}`);
+    lines.push(`Conclusion: ${conclusionText(item)}`);
+  });
+  return lines.join("\n");
+}
+
+function plainEvidenceSources(evidence) {
+  if (!evidence.length) return "No evidence source returned.";
+  const labels = [];
+  if (evidence.some((item) => item.source_type === "local_db")) labels.push(KNOWLEDGE_SOURCE_LABEL);
+  const webSources = evidence
+    .filter((item) => item.source_type === "web")
+    .map((item) => item.source_id || item.url)
+    .filter(Boolean);
+  if (webSources.length) labels.push(`Web evidence: ${[...new Set(webSources)].slice(0, 3).join(", ")}`);
+  return labels.join(" + ") || "Evidence";
+}
+
+async function copyOutput() {
+  const text = state.lastOutputText || els.chatMessages.textContent.trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus("Output copied.", "success");
+  } catch {
+    setStatus("Copy failed.", "error");
+  }
 }
 
 function debugPayload(result) {
@@ -309,6 +584,8 @@ function debugPayload(result) {
       claim_id: item.claim?.claim_id,
       evidence: item.evidence || [],
     })),
+    timings_ms: result.meta?.timings_ms || null,
+    gemma_tokens_per_second: result.meta?.gemma_tokens_per_second || null,
   };
 }
 
@@ -354,20 +631,19 @@ function renderRecentSessions(sessions) {
 function renderSessionItem(session) {
   const selected = state.selectedSessionIds.has(session.id);
   const selectionClass = state.selectedSessionIds.size || !els.cancelSelectionButton.hidden ? " selection-mode" : "";
+  const preview = session.input_preview || session.filename || "F1 fact-check";
   return `
     <article class="session-item${selectionClass}" data-session-id="${escapeHtml(session.id)}">
       <input class="session-check" type="checkbox" data-select-session="${escapeHtml(session.id)}" ${selected ? "checked" : ""} ${els.cancelSelectionButton.hidden ? "hidden" : ""} />
       <div class="session-main">
-        <div class="session-title-row">
-          <strong>${escapeHtml(session.filename || "F1 fact-check")}</strong>
-          <span class="mini-verdict">${escapeHtml(session.overall_verdict || session.status || "pending")}</span>
-        </div>
-        <p>${escapeHtml(session.input_preview || "")}</p>
+        <p title="${escapeHtml(preview)}">${escapeHtml(truncateText(preview, RECENT_SESSION_TEXT_MAX_CHARS))}</p>
         <span>${escapeHtml(session.input_type || "check")} · ${formatDate(session.updated_at)}</span>
       </div>
-      <button class="icon-button session-delete" type="button" data-delete-session="${escapeHtml(session.id)}" aria-label="Delete session" title="Delete">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12" /><path d="M10 11v6M14 11v6" /><path d="M9 7l1-2h4l1 2" /><path d="M8 7l1 14h6l1-14" /></svg>
-      </button>
+      <div class="session-actions-fixed">
+        <button class="icon-button session-delete" type="button" data-delete-session="${escapeHtml(session.id)}" aria-label="Delete session" title="Delete">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12" /><path d="M10 11v6M14 11v6" /><path d="M9 7l1-2h4l1 2" /><path d="M8 7l1 14h6l1-14" /></svg>
+        </button>
+      </div>
     </article>
   `;
 }
@@ -377,10 +653,25 @@ async function openSession(sessionId) {
     const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
     const data = await readJsonResponse(response);
     state.activeSessionId = data.id;
+    restoreSessionInput(data);
     renderSession(data);
-    setStatus("Loaded fact-check run.");
   } catch (error) {
     setStatus(error.message, "error");
+  }
+}
+
+function restoreSessionInput(session) {
+  const inputType = session.input_type || "text";
+  if (["text", "url", "image"].includes(inputType)) setMode(inputType);
+  const resultText = session.fact_check_result?.text || "";
+  if (inputType === "text") {
+    els.textInput.value = resultText || session.input_preview || "";
+  } else if (inputType === "url") {
+    const run = Array.isArray(session.fact_check_runs) ? session.fact_check_runs[0] : null;
+    els.urlInput.value = run?.source_url || session.input_preview || "";
+  } else if (inputType === "image") {
+    clearPendingFile();
+    els.dropTitle.textContent = session.filename || session.input_preview || "Uploaded screenshot";
   }
 }
 
@@ -610,16 +901,42 @@ function renderRateLimit(rateLimit) {
 
 function setProgress(step) {
   els.emptyOutput.hidden = true;
-  els.resultShell.hidden = true;
-  els.progressList.hidden = false;
-  els.progressList.querySelectorAll("[data-step]").forEach((item) => {
-    item.classList.toggle("is-active", item.dataset.step === step);
-    item.classList.toggle("is-done", progressOrder(item.dataset.step) < progressOrder(step));
-  });
+  els.resultShell.hidden = false;
+  els.chatMessages.hidden = false;
+  els.debugDetails.hidden = true;
+  els.gemmaRate.textContent = "";
+  els.pipelineTime.textContent = "Pipeline time: running";
+  renderPipelineProgress(state.mode, step);
 }
 
 function progressOrder(step) {
-  return ["preprocessing", "extracting_claims", "retrieving_evidence", "generating_verdict"].indexOf(step);
+  return state.progressStepIds.indexOf(step);
+}
+
+function startPipelineProgress(mode) {
+  stopPipelineProgress();
+  stopRenderProgress();
+  state.progressStepIndex = 0;
+  state.currentStreamStep = null;
+  state.liveTokenText = "";
+  els.chatMessages.innerHTML = "";
+  renderPipelineProgress(mode);
+  const firstStep = state.progressStepIds[0] || "preparing_input";
+  setProgress(firstStep);
+}
+
+function stopPipelineProgress() {
+  if (state.progressTimer) window.clearInterval(state.progressTimer);
+  state.progressTimer = null;
+}
+
+function renderPipelineProgress(mode, activeStep = state.progressStepIds[state.progressStepIndex] || "preparing_input") {
+  const steps = PIPELINE_STEPS.filter((step) => !step.modes || step.modes.includes(mode));
+  state.progressStepIds = steps.map((step) => step.id);
+  const activeOrder = Math.max(progressOrder(activeStep), 0);
+  const active = steps[activeOrder] || steps[0];
+  if (active) renderLiveStreamView(active, "is-active");
+  else els.chatMessages.innerHTML = "";
 }
 
 function clearInput() {
@@ -641,8 +958,17 @@ function clearPendingFile() {
 }
 
 function clearResult() {
-  els.progressList.hidden = true;
-  els.resultShell.hidden = true;
+  stopRenderProgress();
+  els.resultShell.hidden = false;
+  els.chatMessages.hidden = true;
+  els.chatMessages.innerHTML = "";
+  state.lastOutputText = "";
+  state.currentStreamStep = null;
+  state.liveTokenText = "";
+  els.debugDetails.hidden = true;
+  els.debugPayload.textContent = "";
+  els.pipelineTime.textContent = "Ready";
+  els.gemmaRate.textContent = "";
   els.emptyOutput.hidden = false;
 }
 
@@ -682,6 +1008,58 @@ async function readJsonResponse(response) {
   return data;
 }
 
+async function readSseResponse(response, onEvent) {
+  if (!response.ok) {
+    const data = await response.text();
+    throw new Error(data || `Request failed with HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("Streaming response is not available in this browser.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      await handleSseFrame(frame, onEvent);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) await handleSseFrame(buffer, onEvent);
+}
+
+async function handleSseFrame(frame, onEvent) {
+  const event = parseSseFrame(frame);
+  if (!event) return;
+  if (event.name === "error") {
+    onEvent(event.name, event.data);
+    throw new Error(event.data.detail || "Fact-check stream failed.");
+  }
+  onEvent(event.name, event.data);
+}
+
+function parseSseFrame(frame) {
+  let name = "message";
+  const dataLines = [];
+  frame.split(/\r?\n/).forEach((line) => {
+    if (line.startsWith("event:")) name = line.slice(6).trim() || "message";
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  });
+  if (!dataLines.length) return null;
+  let data = {};
+  try {
+    data = JSON.parse(dataLines.join("\n"));
+  } catch {
+    data = {};
+  }
+  return { name, data };
+}
+
 function validateImage(file) {
   const allowed = ["image/png", "image/jpeg"];
   if (!allowed.includes(file.type)) return "Only PNG, JPG, and JPEG screenshots are supported.";
@@ -702,6 +1080,23 @@ function formatDate(value) {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function truncateText(value, maxChars) {
+  const text = String(value || "");
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(maxChars - 1, 0)).trimEnd()}…`;
+}
+
+function humanizeStage(value) {
+  return String(value || "Pipeline event")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function escapeHtml(value) {

@@ -92,8 +92,9 @@ class AnswerRequest(BaseModel):
     ocr_markdown: str = Field(default="")
     user_request: str = Field(..., min_length=1)
     conversation_history: list[ConversationMessage] = Field(default_factory=list, max_length=40)
-    max_tokens: int | None = Field(default=None, ge=1, le=2048)
+    max_tokens: int | None = Field(default=None, ge=1, le=4096)
     thinking_mode: Literal["fast", "thinking"] = "fast"
+    enable_thinking: bool | None = None
 
 
 class AnswerResponse(BaseModel):
@@ -104,6 +105,7 @@ class AnswerResponse(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    tokens_per_second: float | None = None
     ocr_chars: int
     ocr_truncated: bool
     stopped_due_to_max_tokens: bool = False
@@ -197,14 +199,25 @@ async def answer_question(request: AnswerRequest) -> AnswerResponse:
     finish_reason = str(first_choice.get("finish_reason") or "").strip().lower()
     stopped_due_to_max_tokens = finish_reason == "length"
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    timings = data.get("timings") if isinstance(data.get("timings"), dict) else {}
+    prompt_tokens = as_int_or_none(usage.get("prompt_tokens"))
+    completion_tokens = as_int_or_none(usage.get("completion_tokens"))
+    total_tokens = as_int_or_none(usage.get("total_tokens"))
+    if completion_tokens is None:
+        completion_tokens = as_int_or_none(timings.get("predicted_n"))
+    if prompt_tokens is None:
+        prompt_tokens = as_int_or_none(timings.get("prompt_n"))
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
     return AnswerResponse(
         answer=answer_text,
         reasoning_text=reasoning_text or None,
         model=str(data.get("model") or MODEL_ALIAS),
         elapsed_ms=elapsed_ms,
-        prompt_tokens=usage.get("prompt_tokens"),
-        completion_tokens=usage.get("completion_tokens"),
-        total_tokens=usage.get("total_tokens"),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        tokens_per_second=llama_tokens_per_second(timings, completion_tokens=completion_tokens, elapsed_ms=elapsed_ms),
         ocr_chars=prepared_ocr["original_chars"],
         ocr_truncated=prepared_ocr["truncated"],
         stopped_due_to_max_tokens=stopped_due_to_max_tokens,
@@ -308,6 +321,11 @@ async def answer_question_stream(request: AnswerRequest) -> StreamingResponse:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
+                "tokens_per_second": llama_tokens_per_second(
+                    timings,
+                    completion_tokens=completion_tokens,
+                    elapsed_ms=elapsed_ms,
+                ),
                 "ocr_chars": prepared_ocr["original_chars"],
                 "ocr_truncated": prepared_ocr["truncated"],
                 "stopped_due_to_max_tokens": stopped_due_to_max_tokens,
@@ -390,7 +408,7 @@ def build_chat_payload(
         truncation_note = (
             "\n\nNote: OCR Markdown was truncated to fit the configured context cap."
         )
-    system_content = build_system_prompt(request.thinking_mode)
+    system_content = build_system_prompt(resolve_thinking_enabled(request))
     if has_ocr_context:
         ocr_context = (
             "OCR Markdown appended to this session:\n"
@@ -416,13 +434,13 @@ def build_chat_payload(
     }
     if stream:
         payload["stream_options"] = {"include_usage": True}
-    apply_thinking_mode(payload, request.thinking_mode)
+    apply_thinking_mode(payload, resolve_thinking_enabled(request))
     return payload
 
 
-def build_system_prompt(thinking_mode: str) -> str:
+def build_system_prompt(enable_thinking: bool) -> str:
     mode_prompt = FAST_MODE_PROMPT
-    if thinking_mode == "thinking" and not DISABLE_THINKING:
+    if enable_thinking and not DISABLE_THINKING:
         mode_prompt = THINKING_MODE_PROMPT
     return f"{SYSTEM_PROMPT}\n\n{mode_prompt}"
 
@@ -437,7 +455,7 @@ def build_warmup_payload() -> dict[str, Any]:
         "top_k": 1,
         "stream": False,
     }
-    apply_thinking_mode(payload, "fast")
+    apply_thinking_mode(payload, False)
     return payload
 
 
@@ -697,16 +715,24 @@ def split_reasoning_output(text: str) -> tuple[str, str]:
 def resolve_max_tokens(request: AnswerRequest) -> int:
     if request.max_tokens is not None:
         return request.max_tokens
-    if request.thinking_mode == "thinking" and not DISABLE_THINKING:
+    if resolve_thinking_enabled(request) and not DISABLE_THINKING:
         return DEFAULT_THINKING_MAX_TOKENS
     return DEFAULT_MAX_TOKENS
 
 
-def apply_thinking_mode(payload: dict[str, Any], thinking_mode: str) -> None:
+def resolve_thinking_enabled(request: AnswerRequest) -> bool:
+    if DISABLE_THINKING:
+        return False
+    if request.enable_thinking is not None:
+        return request.enable_thinking
+    return request.thinking_mode == "thinking"
+
+
+def apply_thinking_mode(payload: dict[str, Any], enable_thinking: bool) -> None:
     if DISABLE_THINKING:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
         return
-    if thinking_mode == "thinking":
+    if enable_thinking:
         payload.pop("chat_template_kwargs", None)
         return
     payload["chat_template_kwargs"] = {"enable_thinking": False}
@@ -719,6 +745,34 @@ def as_int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def llama_tokens_per_second(
+    timings: dict[str, Any],
+    *,
+    completion_tokens: int | None,
+    elapsed_ms: int,
+) -> float | None:
+    for key in ("predicted_per_second", "tokens_per_second"):
+        try:
+            value = float(timings.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return round(value, 2)
+    predicted_ms = None
+    for key in ("predicted_ms", "predicted_time_ms"):
+        try:
+            predicted_ms = float(timings.get(key))
+        except (TypeError, ValueError):
+            continue
+        if predicted_ms and predicted_ms > 0:
+            break
+    if completion_tokens is not None and predicted_ms and predicted_ms > 0:
+        return round(completion_tokens / (predicted_ms / 1000), 2)
+    if completion_tokens is not None and elapsed_ms > 0:
+        return round(completion_tokens / (elapsed_ms / 1000), 2)
+    return None
 
 
 def sse_event(event: str, payload: dict[str, Any]) -> str:

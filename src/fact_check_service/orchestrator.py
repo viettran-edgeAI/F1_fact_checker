@@ -20,6 +20,7 @@ from .schemas import (
     ClassifiedClaim,
     EvidenceItem,
     EvidenceSourceType,
+    ExtractedClaim,
     F1RelevanceLabel,
     F1RelevanceResult,
     FinalCheckResponse,
@@ -41,6 +42,7 @@ from .web_search import BraveSearchClient, BraveSearchError
 StructuredRetriever = Callable[[ClassifiedClaim, int], list[dict[str, Any]]]
 WebSearcher = Callable[[str, int], list[dict[str, Any]]]
 WebEvidenceFetcher = Callable[[str, list[dict[str, Any]]], list[WebEvidence]]
+StreamEventCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(slots=True)
@@ -75,38 +77,72 @@ class FactCheckOrchestrator:
         config = FactCheckConfig.from_env()
         return cls(config=config, llm_client=LLMClient(config=config))
 
-    def check_text(self, request: TextCheckRequest) -> FinalCheckResponse:
+    def check_text(
+        self,
+        request: TextCheckRequest,
+        *,
+        event_callback: StreamEventCallback | None = None,
+    ) -> FinalCheckResponse:
         normalized_request = request.model_copy(update={"input_type": CheckInputType.TEXT})
-        return self.check_normalized_text(normalized_request)
+        return self.check_normalized_text(normalized_request, event_callback=event_callback)
 
-    def check_normalized_text(self, request: TextCheckRequest) -> FinalCheckResponse:
+    def check_normalized_text(
+        self,
+        request: TextCheckRequest,
+        *,
+        event_callback: StreamEventCallback | None = None,
+    ) -> FinalCheckResponse:
         started = time.perf_counter()
         timings: dict[str, int] = {}
         warnings: list[str] = []
 
+        _emit(event_callback, "f1_signal_check_started", stage="f1_signal_check", status="started")
         if not _has_f1_signal(request.text):
             timings["total"] = _elapsed_ms(started)
+            _emit(
+                event_callback,
+                "f1_signal_check_finished",
+                stage="f1_signal_check",
+                status="finished",
+                has_f1_signal=False,
+            )
             return _early_response(
                 request.text,
                 reason="no_f1_related_claim_found",
-                summary="No F1-related claim found",
+                summary="No information related to F1 could be extracted.",
                 timings=timings,
                 relevance=_inferred_relevance(False),
                 warnings=warnings,
                 input_type=request.input_type,
                 request_meta=request.meta,
             )
+        _emit(
+            event_callback,
+            "f1_signal_check_finished",
+            stage="f1_signal_check",
+            status="finished",
+            has_f1_signal=True,
+        )
 
         extract_started = time.perf_counter()
+        _emit(event_callback, "claim_extraction_started", stage="claim_extraction", status="started")
         extracted_claims = self.llm_client.extract_claims(request.text, max_claims=request.max_claims)
         extracted_claims = _augment_extracted_claims(request.text, extracted_claims, max_claims=request.max_claims)
         timings["claim_extraction"] = _elapsed_ms(extract_started)
+        _emit(
+            event_callback,
+            "claim_extraction_finished",
+            stage="claim_extraction",
+            status="finished",
+            elapsed_ms=timings["claim_extraction"],
+            claim_count=len(extracted_claims),
+        )
         if not extracted_claims:
             timings["total"] = _elapsed_ms(started)
             return _early_response(
                 request.text,
                 reason="no_f1_related_claim_found",
-                summary="No F1-related claim found",
+                summary="No information related to F1 could be extracted.",
                 timings=timings,
                 relevance=_inferred_relevance(False),
                 warnings=warnings,
@@ -115,30 +151,107 @@ class FactCheckOrchestrator:
             )
 
         classify_started = time.perf_counter()
+        _emit(event_callback, "claim_classification_started", stage="claim_classification", status="started")
         classified_claims = self.llm_client.classify_claims(extracted_claims, context=request.text)
         timings["claim_classification"] = _elapsed_ms(classify_started)
+        _emit(
+            event_callback,
+            "claim_classification_finished",
+            stage="claim_classification",
+            status="finished",
+            elapsed_ms=timings["claim_classification"],
+            claim_count=len(classified_claims),
+        )
 
         plan_started = time.perf_counter()
+        _emit(event_callback, "route_planning_started", stage="route_planning", status="started")
         plans = self._build_execution_plans(classified_claims, request)
         timings["claim_execution_planning"] = _elapsed_ms(plan_started)
+        _emit(
+            event_callback,
+            "route_planning_finished",
+            stage="route_planning",
+            status="finished",
+            elapsed_ms=timings["claim_execution_planning"],
+            route_counts=_route_counts(plans),
+        )
+
+        rewrite_started = time.perf_counter()
+        _emit(
+            event_callback,
+            "structured_claim_rewrite_started",
+            stage="structured_claim_rewrite",
+            status="started",
+        )
+        plans = self._rewrite_structured_claims(plans, context=request.text, warnings=warnings)
+        timings["structured_claim_rewrite"] = _elapsed_ms(rewrite_started)
+        _emit(
+            event_callback,
+            "structured_claim_rewrite_finished",
+            stage="structured_claim_rewrite",
+            status="finished",
+            elapsed_ms=timings["structured_claim_rewrite"],
+        )
 
         structured_started = time.perf_counter()
+        _emit(event_callback, "structured_retrieval_started", stage="structured_retrieval", status="started")
         structured_by_claim = self._run_structured_phase(plans, limit=request.top_k)
         timings["structured_retrieval"] = _elapsed_ms(structured_started)
+        _emit(
+            event_callback,
+            "structured_retrieval_finished",
+            stage="structured_retrieval",
+            status="finished",
+            elapsed_ms=timings["structured_retrieval"],
+            claim_count=len(structured_by_claim),
+        )
 
+        _emit(event_callback, "web_retrieval_started", stage="web_retrieval", status="started")
         web_by_claim, web_warnings, web_timings = self._run_web_phase(plans, context=request.text)
         warnings.extend(web_warnings)
         timings.update(web_timings)
+        _emit(
+            event_callback,
+            "web_retrieval_finished",
+            stage="web_retrieval",
+            status="finished",
+            elapsed_ms=sum(web_timings.values()),
+            claim_count=len(web_by_claim),
+        )
 
         verdicts: list[ClaimVerdict] = []
         verdict_started = time.perf_counter()
+        _emit(event_callback, "evidence_consolidation_started", stage="evidence_consolidation", status="started")
         bundles = self._build_evidence_bundles(plans, structured_by_claim, web_by_claim)
         unsupported_claims = [bundle.claim for bundle in bundles if bundle.claim.verification_stream == VerificationStream.UNSUPPORTED]
+        _emit(
+            event_callback,
+            "evidence_consolidation_finished",
+            stage="evidence_consolidation",
+            status="finished",
+            claim_count=len(bundles),
+        )
+        _emit(event_callback, "verdict_generation_started", stage="verdict_generation", status="started")
         for bundle in bundles:
-            verdicts.append(self._generate_claim_verdict(bundle, include_evidence=request.include_evidence))
+            verdicts.append(
+                self._generate_claim_verdict(
+                    bundle,
+                    include_evidence=request.include_evidence,
+                    event_callback=event_callback,
+                )
+            )
             warnings.extend(bundle.warnings)
         timings["verdict_generation"] = _elapsed_ms(verdict_started)
+        _emit(
+            event_callback,
+            "verdict_generation_finished",
+            stage="verdict_generation",
+            status="finished",
+            elapsed_ms=timings["verdict_generation"],
+            claim_count=len(verdicts),
+        )
 
+        _emit(event_callback, "result_aggregation_started", stage="result_aggregation", status="started")
         timings["total"] = _elapsed_ms(started)
         response = FinalCheckResponse(
             text=request.text,
@@ -154,7 +267,16 @@ class FactCheckOrchestrator:
                 "timings_ms": timings,
                 "route_counts": _route_counts(plans),
                 "f1_relevance": _inferred_relevance(True).model_dump(mode="json"),
+                "gemma_tokens_per_second": _latest_tokens_per_second(self.llm_client),
             },
+        )
+        _emit(
+            event_callback,
+            "result_aggregation_finished",
+            stage="result_aggregation",
+            status="finished",
+            elapsed_ms=timings["total"],
+            verdict=response.verdict.value,
         )
         return response
 
@@ -180,6 +302,50 @@ class FactCheckOrchestrator:
                 required_routes = ()
             plans.append(ClaimExecutionPlan(claim=normalized_claim, required_routes=required_routes))
         return plans
+
+    def _rewrite_structured_claims(
+        self,
+        plans: list[ClaimExecutionPlan],
+        *,
+        context: str,
+        warnings: list[str],
+    ) -> list[ClaimExecutionPlan]:
+        structured_claims = [
+            plan.claim
+            for plan in plans
+            if RetrievalRoute.STRUCTURED in plan.required_routes
+            and plan.claim.verification_stream != VerificationStream.UNSUPPORTED
+        ]
+        if not structured_claims:
+            return plans
+        try:
+            rewritten_by_id = self.llm_client.rewrite_structured_claims(structured_claims, context=context)
+        except AttributeError:
+            return plans
+        except (LLMClientError, httpx.HTTPError) as exc:
+            warnings.append(f"Structured claim rewrite failed; using original claim text: {exc}")
+            return plans
+
+        rewritten_plans: list[ClaimExecutionPlan] = []
+        for plan in plans:
+            rewritten_text = rewritten_by_id.get(plan.claim.claim_id)
+            if not rewritten_text or rewritten_text == plan.claim.text:
+                rewritten_plans.append(plan)
+                continue
+            claim = plan.claim.model_copy(
+                update={
+                    "text": rewritten_text,
+                    "normalized_text": rewritten_text,
+                    "structured_query": _rewrite_structured_query(plan.claim, rewritten_text),
+                    "meta": {
+                        **plan.claim.meta,
+                        "original_extracted_text": plan.claim.text,
+                        "structured_claim_rewritten": True,
+                    },
+                }
+            )
+            rewritten_plans.append(ClaimExecutionPlan(claim=claim, required_routes=plan.required_routes))
+        return rewritten_plans
 
     def _run_structured_phase(
         self,
@@ -311,6 +477,7 @@ class FactCheckOrchestrator:
         bundle: ClaimEvidenceBundle,
         *,
         include_evidence: bool,
+        event_callback: StreamEventCallback | None = None,
     ) -> ClaimVerdict:
         claim = bundle.claim
         if claim.verification_stream == VerificationStream.UNSUPPORTED:
@@ -355,11 +522,29 @@ class FactCheckOrchestrator:
             )
 
         try:
-            raw_verdict = self.llm_client.generate_verdict(
-                claim,
-                structured_evidence=[item.model_dump(mode="json") for item in bundle.structured_evidence],
-                web_evidence=[item.model_dump(mode="json") for item in bundle.web_evidence],
-            )
+            structured_evidence = [item.model_dump(mode="json") for item in bundle.structured_evidence]
+            web_evidence = [item.model_dump(mode="json") for item in bundle.web_evidence]
+            generate_verdict_stream = getattr(self.llm_client, "generate_verdict_stream", None)
+            if event_callback is not None and callable(generate_verdict_stream):
+                raw_verdict = generate_verdict_stream(
+                    claim,
+                    structured_evidence=structured_evidence,
+                    web_evidence=web_evidence,
+                    on_token=lambda delta, kind: _emit(
+                        event_callback,
+                        "gemma_token",
+                        stage="verdict_generation",
+                        claim_id=claim.claim_id,
+                        kind=kind,
+                        delta=delta,
+                    ),
+                )
+            else:
+                raw_verdict = self.llm_client.generate_verdict(
+                    claim,
+                    structured_evidence=structured_evidence,
+                    web_evidence=web_evidence,
+                )
         except (LLMClientError, httpx.HTTPError) as exc:
             bundle.warnings.append(f"Verdict generation failed for {claim.claim_id}: {exc}")
             return _apply_evidence_visibility(
@@ -631,6 +816,27 @@ def _stream_for_routes(
     return fallback if not normalized else VerificationStream.UNSUPPORTED
 
 
+def _rewrite_structured_query(claim: ClassifiedClaim, rewritten_text: str) -> str:
+    parts = [rewritten_text]
+    parts.extend(claim.entities)
+    if claim.structured_query:
+        parts.append(claim.structured_query)
+    return " ".join(part for part in parts if part).strip()
+
+
+def _latest_tokens_per_second(llm_client: LLMClient) -> float | None:
+    metrics = getattr(llm_client, "call_metrics", [])
+    if not isinstance(metrics, list):
+        return None
+    for item in reversed(metrics):
+        if isinstance(item, dict) and item.get("tokens_per_second") is not None:
+            try:
+                return float(item["tokens_per_second"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _apply_evidence_visibility(verdict: ClaimVerdict, *, include_evidence: bool) -> ClaimVerdict:
     if include_evidence:
         return verdict
@@ -694,6 +900,12 @@ def _summary(verdicts: list[ClaimVerdict], unsupported: list[ClassifiedClaim]) -
         f"Checked {len(verdicts)} claim(s): {supports} supported, {refutes} refuted, "
         f"{unknown} not enough info. {len(unsupported)} claim(s) were unsupported or not checkable."
     )
+
+
+def _emit(callback: StreamEventCallback | None, event: str, **payload: Any) -> None:
+    if callback is None:
+        return
+    callback({"event": event, **payload})
 
 
 def _deterministic_structured_result(

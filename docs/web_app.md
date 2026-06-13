@@ -9,7 +9,7 @@ The web app is responsible for:
 - presenting the F1 fact-check UI in the browser
 - managing guest and authenticated identities
 - creating and persisting fact-check sessions
-- sending text, URL, and image inputs to `fact-check-service`
+- sending text, URL, and image inputs to `fact-check-service`, including live session streams
 - rendering the returned verdict, claim list, evidence summary, and debug payload
 
 It does not perform OCR, claim extraction, retrieval, or verdict generation itself.
@@ -49,17 +49,19 @@ Session ownership is tracked as `owner_type` and `owner_id`, not as a global sha
 
 The UI has three submission modes:
 
-- `text` submits plain text to `POST /sessions/check`
-- `url` submits a URL to `POST /sessions/check`
-- `image` uploads a screenshot to `POST /sessions/check-image`
+- `text` streams through `POST /sessions/check/stream`
+- `url` streams through `POST /sessions/check/stream`
+- `image` streams through `POST /sessions/check-image/stream`
+
+The legacy blocking `POST /sessions/check` and `POST /sessions/check-image` endpoints remain available for compatibility.
 
 High-level flow:
 
 1. The user enters text, pastes a URL, or uploads a screenshot.
 2. The web app validates the input and generates or reuses a `session_id`.
 3. A session row is created or updated with preprocessing state and a short input preview.
-4. The app calls `fact-check-service`.
-5. The returned fact-check result is persisted locally and rendered back into the session view.
+4. The app opens the SSE stream to `fact-check-service`, proxies backend stage events, `gemma_token` events, `done`, and `error` back to the browser, and keeps the session row in sync.
+5. The `done` event carries the serialized session detail, which is persisted locally and rendered back into the session view.
 
 For image submissions, the uploaded file is also written to disk before the backend call.
 
@@ -86,25 +88,33 @@ The session history view is filtered to fact-check sessions only.
 
 ## Rendering
 
-The browser UI renders the returned result into three main areas:
+The browser UI renders the streamed result under a `Fact checking system` header in a chatbot-like layout. The browser uses fetch-based SSE parsing, renders backend stage events as they arrive, shows live Gemma verdict tokens during generation, and then replaces the live view with the final persisted session detail when `done` arrives.
 
-- overall verdict
-- extracted claims
-- per-claim verdict cards
-- final explanation
+The rendered result includes:
+
+- claim validity
+- source
+- explanation
+- conclusion
 - optional debug payload
 
-Recent sessions are rendered from the SQLite-backed session list. Opening a session reloads the stored detail view and latest fact-check result.
+The interaction shell keeps fixed input/output panel heights and uses backend-driven progress instead of timer-based status guesses.
+
+Opening a session restores the saved input state for that session before rendering the stored result immediately.
+
+Claim evidence is collapsed by default when multiple evidence items exist: the top evidence item remains visible, and the user can expand the evidence box to see up to four evidence items for that claim.
+
+Recent sessions are rendered from the SQLite-backed session list. The list items no longer show the generated filename/header, displayed input text is capped in the browser, and the status and delete controls stay fixed on the right.
 
 ## Service Boundary
 
 `web_app` talks to `fact-check-service` through `FactCheckClient`:
 
-- `POST /v1/check/text` for text input
-- `POST /v1/check/url` for URL input
-- `POST /v1/check/image` for image input
+- `POST /v1/check/text/stream` for text input
+- `POST /v1/check/url/stream` for URL input
+- `POST /v1/check/image/stream` for image input
 
-The web app does not inspect claim evidence or decide verdicts. It only forwards the user input and stores the response.
+The blocking JSON endpoints remain available for compatibility. The web app does not inspect claim evidence or decide verdicts. It only forwards the user input, streams backend events, and stores the final session detail.
 
 ## Configuration
 
@@ -114,6 +124,7 @@ Relevant environment variables:
 - `FACT_CHECK_SERVICE_URL` for the backend service base URL
 - `WEB_APP_SECRET_KEY` for signed auth and guest cookies
 - `WEB_APP_COOKIE_SECURE` to mark cookies secure in deployment
+- `WEB_APP_KNOWLEDGE_SOURCE_LABEL` to customize the local knowledge-source label shown in claim evidence
 - `WEB_APP_SMTP_*` for email verification during signup
 
 `WEB_APP_OWNER_EMAIL` is used to mark the owner account tier when configured.

@@ -7,6 +7,7 @@
 This block is the center of the current F1 pipeline:
 
 - structured factual claims are checked against the local Formula 1 knowledge database with SQLite exact / FTS plus FAISS semantic retrieval
+- structured-route claims now pass through a Gemma rewrite / normalization step before structured retrieval so standalone claims keep season, year, race, and team context from the source text
 - news, drama, statement, and rumor-style claims are checked with a staged web pipeline: query generation, Brave `llm/context` grounding, optional article fetch, evidence normalization, source-policy filtering, and ranking
 - mixed claims require both structured and web evidence routes
 - unsupported claims are returned with an explainable `NOT_ENOUGH_INFO` outcome
@@ -19,8 +20,13 @@ The service is a FastAPI app with a narrow HTTP surface. The currently active en
 - `GET /v1/knowledge/status`
 - `POST /v1/knowledge/search`
 - `POST /v1/check/text`
+- `POST /v1/check/text/stream`
 - `POST /v1/check/url`
+- `POST /v1/check/url/stream`
 - `POST /v1/check/image`
+- `POST /v1/check/image/stream`
+
+The streaming endpoints emit backend stage events, `gemma_token` events during verdict generation, and terminal `done` / `error` events. The blocking JSON endpoints remain available for compatibility and non-streaming consumers.
 
 The normalized clean-text flow is:
 
@@ -31,18 +37,19 @@ The normalized clean-text flow is:
 5. classify each claim and derive internal `required_routes`
 6. apply deterministic route safeguards for known structured, web, and mixed claim patterns
 7. build route worklists for structured and web execution
-8. run the structured route phase for every claim that requires local evidence
-9. run the web route phase for every claim that requires internet evidence
-10. consolidate route evidence back into per-claim bundles
-11. use deterministic structured verdicts for high-confidence local DB patterns when available
-12. generate remaining claim verdicts with Gemma
-13. aggregate the final verdict and response metadata
+8. run the Gemma structured-claim rewrite / normalization step for claims that require local evidence
+9. run the structured route phase for every claim that requires local evidence
+10. run the web route phase for every claim that requires internet evidence
+11. consolidate route evidence back into per-claim bundles
+12. use deterministic structured verdicts for high-confidence local DB patterns when available
+13. generate remaining claim verdicts with Gemma using request-level thinking control, streaming verdict tokens when the `/stream` endpoints are used
+14. aggregate the final verdict and response metadata
 
 The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text uses the same claim extraction, routing, retrieval, and early-return behavior.
 
 ## Input Contract
 
-`POST /v1/check/text` accepts a `TextCheckRequest` with:
+`POST /v1/check/text` and `POST /v1/check/text/stream` accept a `TextCheckRequest` with:
 
 - `text`: required input text
 - `input_type`: normalized source marker; the text endpoint forces this to `text`
@@ -52,15 +59,17 @@ The text, URL, and image endpoints all converge on the same normalized clean-tex
 - `include_evidence`: whether to include evidence in the response
 - `meta`: request metadata passed through to the result
 
-`POST /v1/check/url` accepts a `URLCheckRequest` with:
+`POST /v1/check/url` and `POST /v1/check/url/stream` accept a `URLCheckRequest` with:
 
 - `url`: required article/page URL
 - `max_claims`, `top_k`, `verification_streams`, `include_evidence`, and `meta`
 
-`POST /v1/check/image` accepts multipart form data with:
+`POST /v1/check/image` and `POST /v1/check/image/stream` accept multipart form data with:
 
 - `image`: required image upload
 - `meta`: optional JSON object string passed through to the result
+
+The `/stream` variants accept the same request payloads as their blocking counterparts and return SSE events instead of a single JSON body.
 
 ## Routing Model
 
@@ -91,6 +100,8 @@ Web evidence source trust is controlled by `configs/source_policy.yaml`. The pol
 
 For stable historical/statistical claims, the service uses deterministic structured checks before asking Gemma for a verdict when the claim matches supported local DB patterns such as race winners, Drivers' Championship winners, driver title counts, driver/team/season associations, and known circuit facts. This avoids turning straightforward database lookups into model-dependent verdicts.
 
+Gemma prompt calls are stateless HTTP requests to `llm-service`. Extraction, classification, search-query generation, and verdict generation run with explicit `enable_thinking=false`. Verdict generation is capped to compact JSON because the service only consumes the claim verdict, confidence, and short summary before deterministic final aggregation.
+
 This is driven by:
 
 - `llm_client.py` for extraction, classification, search-query generation, and verdict generation
@@ -112,6 +123,8 @@ It returns:
 - unsupported claims
 - a summary string
 - runtime metadata such as run id, timing, warnings, and inferred F1 claim-detection metadata
+- latest Gemma throughput metadata when available, including `gemma_tokens_per_second`
+- for streaming calls, SSE events for backend stage progress, streamed verdict tokens, and the final `done` / `error` terminal state
 
 Each claim verdict records:
 
@@ -125,6 +138,8 @@ Each claim verdict records:
 The service also has explicit early-return responses for:
 
 - text with no F1-related checkable claim
+
+That early return now uses the summary string `No information related to F1 could be extracted.`
 
 ## Knowledge Base
 
@@ -175,4 +190,4 @@ Relevant environment variables:
 
 ## Pipeline Fit
 
-`fact-check-service` is the decision layer between input normalization and final verdict generation. Direct text enters the normalized-text flow immediately; URL and image endpoints normalize their sources first, then reuse the same claim extraction, routing, retrieval, and verdict generation path.
+`fact-check-service` is the decision layer between input normalization and final verdict generation. Direct text enters the normalized-text flow immediately; URL and image endpoints normalize their sources first, then reuse the same claim extraction, routing, retrieval, and verdict generation path. The `/stream` variants follow the same orchestration but surface progress and verdict tokens as SSE events.

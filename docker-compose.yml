@@ -26,6 +26,7 @@ services:
       WEB_APP_SMTP_PASSWORD: ${WEB_APP_SMTP_PASSWORD:-}
       WEB_APP_SMTP_FROM: ${WEB_APP_SMTP_FROM:-}
       WEB_APP_SMTP_STARTTLS: ${WEB_APP_SMTP_STARTTLS:-1}
+      WEB_APP_KNOWLEDGE_SOURCE_LABEL: ${WEB_APP_KNOWLEDGE_SOURCE_LABEL:-Knowledge Database (F1 WC database + F1 Jolpica API)}
     depends_on:
       fact-check-service:
         condition: service_healthy
@@ -150,10 +151,10 @@ services:
       LLM_TOP_P: 0.95
       LLM_TOP_K: 40
       LLM_PARALLEL: 1
-      LLM_GPU_LAYERS: 0
+      LLM_GPU_LAYERS: all
       LLM_DEVICE: ""
       LLM_FLASH_ATTN: ""
-      LLM_FIT: "off"
+      LLM_FIT: "on"
       LLM_KV_OFFLOAD: 1
       LLM_OP_OFFLOAD: 1
     healthcheck:

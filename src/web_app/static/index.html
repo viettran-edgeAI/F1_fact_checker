@@ -78,50 +78,43 @@
           <div class="action-row">
             <button class="primary-button" id="checkButton" type="button">Check F1 News</button>
             <button class="ghost-button" id="clearButton" type="button">Clear</button>
+            <span class="action-spacer" aria-hidden="true"></span>
+            <p class="upload-limit" id="uploadLimitStatus" aria-live="polite"></p>
           </div>
-          <p class="upload-limit" id="uploadLimitStatus" aria-live="polite"></p>
           <p class="state-text" id="uploadState" aria-live="polite"></p>
         </section>
 
         <section class="panel output-panel" aria-label="Fact-check result">
-          <div class="progress-list" id="progressList" hidden>
-            <div data-step="preprocessing">Preparing input...</div>
-            <div data-step="extracting_claims">Extracting claims...</div>
-            <div data-step="retrieving_evidence">Retrieving evidence...</div>
-            <div data-step="generating_verdict">Generating verdict...</div>
+          <div class="output-layout">
+            <article class="result-shell" id="resultShell">
+              <div class="output-header">
+                <div>
+                  <span id="pipelineTime">Ready</span>
+                  <strong>Fact checking system</strong>
+                </div>
+                <button class="icon-button copy-output-button" id="copyOutputButton" type="button" aria-label="Copy output" title="Copy output">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="9" width="10" height="10" rx="1.5" />
+                    <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                  </svg>
+                </button>
+              </div>
+              <div class="empty-output" id="emptyOutput">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 12h10" />
+                  <path d="m13 8 4 4-4 4" />
+                  <path d="M4 5h16v14H4z" />
+                </svg>
+                <p>Submit text, a URL, or a screenshot to start a fact-check run.</p>
+              </div>
+              <div class="chat-messages" id="chatMessages" hidden></div>
+              <div class="gemma-rate" id="gemmaRate"></div>
+              <details class="debug-details" id="debugDetails" hidden>
+                <summary>Debug details</summary>
+                <pre id="debugPayload"></pre>
+              </details>
+            </article>
           </div>
-
-          <div class="empty-output" id="emptyOutput">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 12h10" />
-              <path d="m13 8 4 4-4 4" />
-              <path d="M4 5h16v14H4z" />
-            </svg>
-            <p>Submit text, a URL, or a screenshot to start a fact-check run.</p>
-          </div>
-
-          <article class="result-shell" id="resultShell" hidden>
-            <section class="result-section">
-              <span class="section-kicker">Overall verdict</span>
-              <div class="verdict-pill" id="overallVerdict">NOT_ENOUGH_INFO</div>
-            </section>
-            <section class="result-section">
-              <span class="section-kicker">Extracted claims</span>
-              <div class="claims-list" id="claimsList"></div>
-            </section>
-            <section class="result-section">
-              <span class="section-kicker">Claim verdicts</span>
-              <div class="claim-verdicts" id="claimVerdicts"></div>
-            </section>
-            <section class="result-section">
-              <span class="section-kicker">Final explanation</span>
-              <p class="summary-text" id="summaryText"></p>
-            </section>
-            <details class="debug-details" id="debugDetails">
-              <summary>Debug details</summary>
-              <pre id="debugPayload"></pre>
-            </details>
-          </article>
         </section>
       </section>
 
@@ -254,6 +247,9 @@
       </div>
     </div>
 
+    <script>
+      window.F1_FACT_CHECK_CONFIG = __F1_FACT_CHECK_CONFIG__;
+    </script>
     <script src="/static/app.js"></script>
   </body>
 </html>

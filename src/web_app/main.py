@@ -12,11 +12,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
+from collections.abc import Callable, Iterator
 from typing import Any, Literal
 from urllib import parse
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -70,6 +71,10 @@ SMTP_USERNAME = os.environ.get("WEB_APP_SMTP_USERNAME", "").strip()
 SMTP_PASSWORD = os.environ.get("WEB_APP_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("WEB_APP_SMTP_FROM", SMTP_USERNAME or "no-reply@jetsonocrai.cc").strip()
 SMTP_STARTTLS = os.environ.get("WEB_APP_SMTP_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
+KNOWLEDGE_SOURCE_LABEL = os.environ.get(
+    "WEB_APP_KNOWLEDGE_SOURCE_LABEL",
+    "Knowledge Database (F1 WC database + F1 Jolpica API)",
+).strip() or "Knowledge Database (F1 WC database + F1 Jolpica API)"
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
@@ -189,6 +194,10 @@ async def index() -> HTMLResponse:
     html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     html = html.replace("/static/styles.css", f"/static/styles.css?v={asset_version}")
     html = html.replace("/static/app.js", f"/static/app.js?v={asset_version}")
+    html = html.replace(
+        "__F1_FACT_CHECK_CONFIG__",
+        json.dumps({"knowledgeSourceLabel": KNOWLEDGE_SOURCE_LABEL}, ensure_ascii=False),
+    )
     return HTMLResponse(html)
 
 
@@ -463,6 +472,55 @@ async def check_session(
     return data
 
 
+@app.post("/sessions/check/stream")
+async def check_session_stream(
+    request_body: CheckSessionRequest,
+    identity: Identity = Depends(current_identity),
+) -> StreamingResponse:
+    identity = coerce_identity(identity)
+    input_type = request_body.input_type
+    input_text = normalize_check_text(request_body.text or "")
+    source_url = normalize_check_url(request_body.url or "")
+    if input_type == "text" and not input_text:
+        raise HTTPException(status_code=400, detail="Text input cannot be empty.")
+    if input_type == "url" and not source_url:
+        raise HTTPException(status_code=400, detail="URL input cannot be empty.")
+
+    limit_status = rate_limit_status(identity)
+    if not limit_status["unlimited"] and limit_status["remaining"] <= 0:
+        return _single_sse_response(
+            "error",
+            {"detail": "Fact-check run limit exceeded.", "rate_limit": limit_status},
+        )
+
+    record_fact_check(identity)
+    session_id = (request_body.session_id or "").strip() or uuid.uuid4().hex
+    preview = input_text if input_type == "text" else source_url
+    _create_or_update_fact_check_session(
+        session_id=session_id,
+        identity=identity,
+        input_type=input_type,
+        preview=preview,
+        filename=session_title_from_input(input_type, preview),
+        original_path=source_url if input_type == "url" else "",
+    )
+
+    def backend_events() -> Iterator[dict[str, Any]]:
+        meta = {"session_id": session_id, "owner_type": identity.owner_type}
+        if input_type == "text":
+            yield from fact_check_client.stream_check_text(input_text, meta=meta)
+        else:
+            yield from fact_check_client.stream_check_url(source_url, meta=meta)
+
+    return _session_stream_response(
+        session_id=session_id,
+        input_type=input_type,
+        identity=identity,
+        backend_events=backend_events,
+        source_url=source_url if input_type == "url" else None,
+    )
+
+
 @app.post("/sessions/check-image")
 async def check_image_session(
     image: UploadFile = File(...),
@@ -570,6 +628,59 @@ async def check_image_session(
     return data
 
 
+@app.post("/sessions/check-image/stream")
+async def check_image_session_stream(
+    image: UploadFile = File(...),
+    session_id: str | None = None,
+    identity: Identity = Depends(current_identity),
+) -> StreamingResponse:
+    identity = coerce_identity(identity)
+    filename = sanitize_filename(image.filename or "f1-news-screenshot.png")
+    content_type = normalize_content_type(image.content_type or "", filename)
+    validate_image_upload(filename, content_type)
+    body = await image.read()
+    if not body:
+        raise HTTPException(status_code=400, detail="Upload is empty.")
+
+    limit_status = rate_limit_status(identity)
+    if not limit_status["unlimited"] and limit_status["remaining"] <= 0:
+        return _single_sse_response(
+            "error",
+            {"detail": "Fact-check run limit exceeded.", "rate_limit": limit_status},
+        )
+    record_fact_check(identity)
+
+    session_id = (session_id or "").strip() or uuid.uuid4().hex
+    suffix = Path(filename).suffix.lower()
+    image_path = artifact_owner_dir(UPLOAD_DIR, identity) / f"{session_id}{suffix}"
+    image_path.write_bytes(body)
+    _create_or_update_fact_check_session(
+        session_id=session_id,
+        identity=identity,
+        input_type="image",
+        preview=filename,
+        filename=filename,
+        content_type=content_type,
+        original_path=str(image_path),
+    )
+
+    def backend_events() -> Iterator[dict[str, Any]]:
+        yield from fact_check_client.stream_check_image(
+            filename=filename,
+            content_type=content_type,
+            body=body,
+            meta={"session_id": session_id, "owner_type": identity.owner_type},
+        )
+
+    return _session_stream_response(
+        session_id=session_id,
+        input_type="image",
+        identity=identity,
+        backend_events=backend_events,
+        image_path=image_path,
+    )
+
+
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str, identity: Identity = Depends(current_identity)) -> dict[str, Any]:
     identity = coerce_identity(identity)
@@ -657,6 +768,214 @@ async def bulk_delete_sessions(
         "deleted_count": deleted_count,
         "missing_ids": missing_ids,
     }
+
+
+def _create_or_update_fact_check_session(
+    *,
+    session_id: str,
+    identity: Identity,
+    input_type: str,
+    preview: str,
+    filename: str,
+    original_path: str,
+    content_type: str = FACT_CHECK_CONTENT_TYPE,
+) -> None:
+    now = utc_now()
+    session = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+    if session is None:
+        store.create_session(
+            session_id=session_id,
+            owner_type=identity.owner_type,
+            owner_id=identity.owner_id,
+            filename=filename,
+            content_type=content_type,
+            original_path=original_path,
+            created_at=now,
+            status="preprocessing",
+            input_type=input_type,
+            input_preview=preview[:500],
+        )
+        prune_sessions_for_identity(identity)
+        return
+
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        now,
+        filename=filename,
+        content_type=content_type,
+        original_path=original_path,
+        input_type=input_type,
+        input_preview=preview[:500],
+        status="preprocessing",
+        error=None,
+    )
+
+
+def _session_stream_response(
+    *,
+    session_id: str,
+    input_type: str,
+    identity: Identity,
+    backend_events: Callable[[], Iterator[dict[str, Any]]],
+    source_url: str | None = None,
+    image_path: Path | None = None,
+) -> StreamingResponse:
+    return StreamingResponse(
+        _stream_session_events(
+            session_id=session_id,
+            input_type=input_type,
+            identity=identity,
+            backend_events=backend_events,
+            source_url=source_url,
+            image_path=image_path,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _stream_session_events(
+    *,
+    session_id: str,
+    input_type: str,
+    identity: Identity,
+    backend_events: Callable[[], Iterator[dict[str, Any]]],
+    source_url: str | None = None,
+    image_path: Path | None = None,
+) -> Iterator[str]:
+    started = time.perf_counter()
+    store.update_owned_session(
+        session_id,
+        identity.owner_type,
+        identity.owner_id,
+        utc_now(),
+        status="running",
+    )
+    saw_done = False
+    try:
+        for item in backend_events():
+            event_name = str(item.get("event") or "message")
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            if event_name == "done":
+                result = data.get("result")
+                if not isinstance(result, dict):
+                    raise FactCheckServiceError("Fact-check stream ended without a result payload.")
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                persist_fact_check_result(
+                    session_id=session_id,
+                    input_type=input_type,
+                    result=result,
+                    identity=identity,
+                    elapsed_ms=elapsed_ms,
+                    source_url=source_url,
+                    image_path=image_path,
+                )
+                store.update_owned_session(
+                    session_id,
+                    identity.owner_type,
+                    identity.owner_id,
+                    utc_now(),
+                    status="completed",
+                    error=None,
+                    answer_elapsed_ms=elapsed_ms,
+                )
+                updated = store.get_session(session_id, owner_type=identity.owner_type, owner_id=identity.owner_id)
+                if updated is None:
+                    raise FactCheckServiceError("Session vanished after streamed fact-check.")
+                payload = serialize_session_detail(updated)
+                payload["rate_limit"] = rate_limit_status(identity)
+                saw_done = True
+                yield _sse_event("done", payload)
+                continue
+            if event_name == "error":
+                detail = str(data.get("detail") or "Fact-check stream failed.")
+                store.update_owned_session(
+                    session_id,
+                    identity.owner_type,
+                    identity.owner_id,
+                    utc_now(),
+                    status="error",
+                    error=detail,
+                )
+                yield _sse_event("error", data)
+                return
+            status = _session_status_for_stream_event(event_name, data)
+            if status:
+                store.update_owned_session(
+                    session_id,
+                    identity.owner_type,
+                    identity.owner_id,
+                    utc_now(),
+                    status=status,
+                )
+            yield _sse_event(event_name, data)
+    except FactCheckServiceError as exc:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            utc_now(),
+            status="error",
+            error=str(exc),
+        )
+        yield _sse_event("error", {"detail": str(exc)})
+        return
+    except Exception as exc:  # pragma: no cover - defensive stream boundary
+        detail = f"Fact-check stream failed: {exc}"
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            utc_now(),
+            status="error",
+            error=detail,
+        )
+        yield _sse_event("error", {"detail": detail})
+        return
+    if not saw_done:
+        store.update_owned_session(
+            session_id,
+            identity.owner_type,
+            identity.owner_id,
+            utc_now(),
+            status="error",
+            error="Fact-check stream ended before completion.",
+        )
+        yield _sse_event("error", {"detail": "Fact-check stream ended before completion."})
+
+
+def _session_status_for_stream_event(event_name: str, data: dict[str, Any]) -> str | None:
+    if not event_name.endswith("_started"):
+        return None
+    stage = str(data.get("stage") or event_name.removesuffix("_started"))
+    if stage in {"url_fetch", "ocr"}:
+        return "preprocessing"
+    if stage in {"claim_extraction", "claim_classification", "route_planning"}:
+        return "extracting_claims"
+    if stage in {"structured_retrieval", "web_retrieval", "evidence_consolidation"}:
+        return "retrieving_evidence"
+    if stage == "verdict_generation":
+        return "generating_verdict"
+    if stage == "result_aggregation":
+        return "finalizing"
+    return "running"
+
+
+def _single_sse_response(event: str, payload: dict[str, Any]) -> StreamingResponse:
+    return StreamingResponse(
+        iter([_sse_event(event, payload)]),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {body}\n\n"
+
+
 def as_int_or_none(value: Any) -> int | None:
     if value is None:
         return None

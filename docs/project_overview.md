@@ -21,9 +21,11 @@ The active verification model is:
 2. extract Formula 1-related checkable claims
 3. return early when no F1-related checkable claim is found
 4. classify each claim into a retrieval route
-5. execute structured retrieval, web retrieval, or both
-6. generate per-claim verdicts from the evidence
-7. aggregate the final fact-check result for the UI or API caller
+5. rewrite and normalize structured-route claims before local retrieval when needed
+6. execute structured retrieval, web retrieval, or both
+7. generate per-claim verdicts from the evidence
+8. stream backend stage events and live Gemma verdict tokens to the browser when the streaming endpoints are used
+9. aggregate the final fact-check result for the UI or API caller
 
 At a high level:
 
@@ -40,7 +42,7 @@ user input
 
 ### `web-app`
 
-The web app is the user-facing entry point. It serves the browser UI, manages guest and authenticated identities, stores session history in SQLite, saves uploaded screenshots and fact-check results, and forwards text, URL, and image requests to `fact-check-service`.
+The web app is the user-facing entry point. It serves the browser UI, manages guest and authenticated identities, stores session history in SQLite, saves uploaded screenshots and fact-check results, and forwards text, URL, and image requests to `fact-check-service`, including the live session stream used by the browser.
 
 ### `fact-check-service`
 
@@ -49,15 +51,16 @@ This is the center of the system. It owns:
 - claim extraction
 - claim classification
 - route planning
+- Gemma-based structured-claim rewrite / normalization before local retrieval
 - structured retrieval from the local F1 knowledge base
 - web retrieval through Brave search/context plus source-policy evidence ranking
 - verdict generation and final response aggregation
 
-It exposes the main verification endpoints for text, URL, and image inputs.
+It exposes the main blocking and streaming verification endpoints for text, URL, and image inputs.
 
 ### `llm-service`
 
-This service wraps a local `llama-server` process running a Gemma GGUF model. It provides a small HTTP API for prompt execution and returns model answers plus timing and usage metadata. It does not decide fact-check logic; it is the prompt execution backend used by `fact-check-service`.
+This service wraps a local `llama-server` process running a Gemma GGUF model. It provides a small HTTP API for prompt execution and returns model answers plus timing, usage, and streaming metadata. It does not decide fact-check logic; it is the prompt execution backend used by `fact-check-service`.
 
 ### `ocr-service`
 
@@ -101,6 +104,6 @@ For the exact tree, see [project_structure.md](/home/viettran_orin/Documents/F1_
 
 ## Current Status
 
-The repository refactor to the four-service F1 architecture is largely complete. The end-to-end path for text, URL, and image fact-checking exists, and the remaining work is mostly reliability hardening around retrieval quality, URL normalization, and broader integration validation.
+The repository refactor to the four-service F1 architecture is largely complete. The end-to-end path for text, URL, and image fact-checking exists, including SSE-backed live streaming through the browser, and the remaining work is mostly reliability hardening around retrieval quality, URL normalization, and broader integration validation.
 
 For implementation status details, see [project_progress.md](/home/viettran_orin/Documents/F1_fact_checker/docs/project_progress.md).

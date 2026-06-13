@@ -12,10 +12,10 @@ Current scope is intentionally narrow:
 
 ## Runtime Role
 
-The service runs as a FastAPI app and exposes a minimal API for OCR and health checks. It uses Paddle OCR runtime components with PP-OCRv5 detection and recognition models:
+The service runs as a FastAPI app and exposes a minimal API for OCR and health checks. It uses Paddle OCR runtime components with PP-OCRv6 detection and recognition models:
 
-- detection: `PP-OCRv5_mobile_det`
-- recognition: `PP-OCRv5_mobile_rec`
+- detection: `PP-OCRv6_small_det`
+- recognition: `PP-OCRv6_small_rec`
 
 The pipeline may optionally preload on startup and run a warmup inference using a synthetic image so the first real request does not pay the full initialization cost.
 
@@ -91,7 +91,11 @@ Relevant runtime knobs:
 - `OCR_HOST`: bind host when running the service directly; defaults to `0.0.0.0`
 - `OCR_PORT`: bind port when running the service directly; defaults to `8000`
 
-Model directories default under `~/models/ocr/` unless overridden by the OCR runtime config environment variables.
+Model directories default under `~/models/ocr/PP-OCRv6_small_det_infer` and `~/models/ocr/PP-OCRv6_small_rec_infer` unless overridden by the OCR runtime config environment variables.
+
+## GPU Runtime
+
+Docker Compose runs `ocr-service` with the NVIDIA runtime, `NVIDIA_VISIBLE_DEVICES=all`, and `OCR_DEVICE=gpu:0`. The Paddle runtime must report CUDA support and `gpu:0`; CPU-only OCR inference is not an intended deployment mode for this project.
 
 ## Limitations
 

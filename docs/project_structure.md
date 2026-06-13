@@ -31,6 +31,7 @@ This document describes the current repository layout only. It intentionally sta
 │   ├── project_overview.md
 │   ├── project_progress.md
 │   ├── project_structure.md
+│   ├── ui_streaming_limitations.md
 │   └── web_app.md
 ├── requirements/
 │   ├── fact_check.txt
