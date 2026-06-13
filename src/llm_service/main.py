@@ -35,7 +35,7 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", f"http://{LLAMA_HOST}:{LLA
 LLM_HOST = os.environ.get("LLM_HOST", "0.0.0.0")
 LLM_PORT = int(os.environ.get("LLM_PORT", "8081"))
 
-DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "12288"))
+DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "8192"))
 DEFAULT_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "160"))
 DEFAULT_THINKING_MAX_TOKENS = int(
     os.environ.get("LLM_THINKING_MAX_TOKENS", os.environ.get("LLM_MAX_TOKENS_THINKING", "768"))
@@ -44,9 +44,26 @@ DEFAULT_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 DEFAULT_TOP_P = float(os.environ.get("LLM_TOP_P", "0.95"))
 DEFAULT_TOP_K = int(os.environ.get("LLM_TOP_K", "40"))
 DEFAULT_PARALLEL = int(os.environ.get("LLM_PARALLEL", "1"))
+DEFAULT_BATCH_SIZE = int(os.environ.get("LLM_BATCH_SIZE", "512"))
+DEFAULT_UBATCH_SIZE = int(os.environ.get("LLM_UBATCH_SIZE", "128"))
 DEFAULT_GPU_LAYERS = os.environ.get("LLM_GPU_LAYERS", "auto")
 DEFAULT_MAX_OCR_CHARS = int(os.environ.get("LLM_MAX_OCR_CHARS", "12000"))
 DEFAULT_MAX_HISTORY_CHARS = int(os.environ.get("LLM_MAX_HISTORY_CHARS", "4000"))
+LLM_MTP_ENABLED = os.environ.get("LLM_MTP_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+LLM_SPEC_TYPE = os.environ.get("LLM_SPEC_TYPE", "draft-mtp").strip()
+LLM_SPEC_DRAFT_MODEL_PATH = Path(
+    os.environ.get(
+        "LLM_SPEC_DRAFT_MODEL_PATH",
+        MODEL_PATH.parent / "mtp" / "gemma-4-E2B-it-Q4_0-MTP.gguf",
+    )
+)
+LLM_SPEC_DRAFT_N_MAX = int(os.environ.get("LLM_SPEC_DRAFT_N_MAX", "2"))
+LLM_SPEC_DRAFT_GPU_LAYERS = os.environ.get("LLM_SPEC_DRAFT_GPU_LAYERS", DEFAULT_GPU_LAYERS).strip()
+LLM_SPEC_DRAFT_DEVICE = os.environ.get("LLM_SPEC_DRAFT_DEVICE", "").strip()
 LLM_DEVICE = os.environ.get("LLM_DEVICE", "").strip()
 LLM_FLASH_ATTN = os.environ.get("LLM_FLASH_ATTN", "").strip()
 LLM_FIT = os.environ.get("LLM_FIT", "").strip()
@@ -63,7 +80,7 @@ LLM_OP_OFFLOAD = os.environ.get("LLM_OP_OFFLOAD", "1").lower() not in {
 STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LLM_STARTUP_TIMEOUT_SECONDS", "240"))
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("LLM_REQUEST_TIMEOUT_SECONDS", "300"))
 
-MODEL_ALIAS = os.environ.get("LLM_MODEL_ALIAS", "gemma-4-E2B-it-Q4_K_M")
+MODEL_ALIAS = os.environ.get("LLM_MODEL_ALIAS", "gemma-4-E2B-it-qat-UD-Q4_K_XL")
 DISABLE_THINKING = os.environ.get("LLM_DISABLE_THINKING", "0").lower() not in {
     "0",
     "false",
@@ -124,6 +141,8 @@ class LlamaServer:
 
         if not MODEL_PATH.exists():
             raise RuntimeError(f"LLM model file does not exist: {MODEL_PATH}")
+        if LLM_MTP_ENABLED and LLM_SPEC_DRAFT_MODEL_PATH and not LLM_SPEC_DRAFT_MODEL_PATH.exists():
+            raise RuntimeError(f"LLM MTP draft model file does not exist: {LLM_SPEC_DRAFT_MODEL_PATH}")
 
         self.process = subprocess.Popen(
             build_llama_command(),
@@ -358,6 +377,10 @@ def build_llama_command() -> list[str]:
         str(DEFAULT_CTX_SIZE),
         "--parallel",
         str(DEFAULT_PARALLEL),
+        "--batch-size",
+        str(DEFAULT_BATCH_SIZE),
+        "--ubatch-size",
+        str(DEFAULT_UBATCH_SIZE),
         "--gpu-layers",
         DEFAULT_GPU_LAYERS,
         "--temp",
@@ -369,6 +392,21 @@ def build_llama_command() -> list[str]:
         "--no-ui",
         "--offline",
     ]
+    if LLM_MTP_ENABLED:
+        command.extend(
+            [
+                "--spec-type",
+                LLM_SPEC_TYPE,
+                "--spec-draft-n-max",
+                str(LLM_SPEC_DRAFT_N_MAX),
+            ]
+        )
+        if LLM_SPEC_DRAFT_MODEL_PATH:
+            command.extend(["--model-draft", str(LLM_SPEC_DRAFT_MODEL_PATH)])
+        if LLM_SPEC_DRAFT_GPU_LAYERS:
+            command.extend(["--gpu-layers-draft", LLM_SPEC_DRAFT_GPU_LAYERS])
+        if LLM_SPEC_DRAFT_DEVICE:
+            command.extend(["--device-draft", LLM_SPEC_DRAFT_DEVICE])
     if DISABLE_THINKING:
         command.extend(
             [
@@ -386,6 +424,8 @@ def build_llama_command() -> list[str]:
         command.extend(["--flash-attn", LLM_FLASH_ATTN])
     if LLM_FIT:
         command.extend(["--fit", LLM_FIT])
+    if not WARMUP_ON_STARTUP:
+        command.append("--no-warmup")
     if not LLM_KV_OFFLOAD:
         command.append("--no-kv-offload")
     if not LLM_OP_OFFLOAD:

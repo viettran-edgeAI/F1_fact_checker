@@ -99,16 +99,32 @@ Key environment variables:
 - `LLAMA_SERVER_URL`: base URL when connecting to an existing server
 - `LLM_HOST` / `LLM_PORT`: bind address for the FastAPI wrapper
 - `LLM_MODEL_ALIAS`: model label returned in responses
-- `LLM_CTX_SIZE`: context window size passed to `llama-server`; Docker Compose currently sets this to `12288` so verdict prompts can carry richer compacted web evidence
+- `LLM_CTX_SIZE`: context window size passed to `llama-server`; Docker Compose currently sets this to `8192` for the tested Jetson Gemma 4 MTP profile
 - `LLM_MAX_TOKENS`: default output cap for fast mode
 - `LLM_THINKING_MAX_TOKENS` or `LLM_MAX_TOKENS_THINKING`: default output cap for thinking mode
 - `LLM_TEMPERATURE`, `LLM_TOP_P`, `LLM_TOP_K`: generation controls
-- `LLM_PARALLEL`, `LLM_GPU_LAYERS`, `LLM_DEVICE`, `LLM_FLASH_ATTN`, `LLM_FIT`: runtime tuning knobs for the local model server
+- `LLM_PARALLEL`, `LLM_BATCH_SIZE`, `LLM_UBATCH_SIZE`, `LLM_GPU_LAYERS`, `LLM_DEVICE`, `LLM_FLASH_ATTN`, `LLM_FIT`: runtime tuning knobs for the local model server
+- `LLM_MTP_ENABLED`: enables llama.cpp speculative decoding with Gemma 4 MTP when set to `1`, `true`, or `yes`
+- `LLM_SPEC_TYPE`: speculative decoding type passed to llama.cpp; Docker Compose currently uses `draft-mtp`
+- `LLM_SPEC_DRAFT_MODEL_PATH`: explicit local GGUF drafter path; Docker Compose uses `/models/llm/mtp/gemma-4-E2B-it-Q4_0-MTP.gguf`
+- `LLM_SPEC_DRAFT_N_MAX`: maximum drafted tokens; Docker Compose currently uses `2`
+- `LLM_SPEC_DRAFT_GPU_LAYERS` / `LLM_SPEC_DRAFT_DEVICE`: optional draft-model offload controls
+- `GGML_CUDA_DISABLE_GRAPHS`: set to `1` in Docker Compose for the Jetson MTP profile to avoid CUDA graph allocation failures during slot initialization
 - `LLM_KV_OFFLOAD`, `LLM_OP_OFFLOAD`: offload toggles
 - `LLM_STARTUP_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`: startup and request timeouts
 - `LLM_DISABLE_THINKING`: forces non-thinking behavior at the server level
 - `LLM_EXTERNAL_LLAMA_SERVER`: skips local process startup and waits for an existing server
 - `LLM_WARMUP_ON_STARTUP`: controls the startup warmup call
+
+## MTP / Speculative Decoding
+
+`llm-service` starts Gemma with llama.cpp MTP speculative decoding when `LLM_MTP_ENABLED=1`. Docker Compose enables the tested Jetson profile by default. The target model is `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, and the local MTP drafter is `models/llm/mtp/gemma-4-E2B-it-Q4_0-MTP.gguf`:
+
+```text
+--ctx-size 8192 --batch-size 512 --ubatch-size 128 --spec-type draft-mtp --spec-draft-n-max 2 --model-draft <drafter>
+```
+
+The Unsloth Gemma 4 QAT model card notes that MTP drafts are verified by the target model, so the acceleration path should not change generated output. The bundled llama.cpp runtime was rebuilt to version `9625` so it can load the Gemma 4 assistant draft architecture. On the current Jetson profile, the service also sets `GGML_CUDA_DISABLE_GRAPHS=1`; without that setting, the target and draft model load but slot initialization can fail during CUDA graph capture. The full stack also uses reduced llama.cpp batch buffers because OCR and LLM share the same 8 GB GPU memory budget. See [llm_mtp_activation.md](/home/viettran_orin/Documents/F1_fact_checker/docs/llm_mtp_activation.md) for the activation and verification process.
 
 ## Integration Points
 
@@ -123,7 +139,7 @@ The service does not know anything about structured facts, Brave Search, or F1 r
 
 ## GPU Runtime
 
-Docker Compose runs `llm-service` with the NVIDIA runtime and `NVIDIA_VISIBLE_DEVICES=all`. `LLM_GPU_LAYERS` must be greater than zero for Gemma inference to use CUDA offload. On the current Jetson Orin deployment, the stable setting while `ocr-service` is resident on the same GPU is `LLM_GPU_LAYERS=8`; larger values can fail model loading because OCR and LLM share the 8 GB memory budget.
+Docker Compose runs `llm-service` with the NVIDIA runtime and `NVIDIA_VISIBLE_DEVICES=all`. `LLM_GPU_LAYERS` must be greater than zero for Gemma inference to use CUDA offload. The current Compose profile uses `LLM_GPU_LAYERS=all`, `LLM_FIT=on`, `LLM_CTX_SIZE=8192`, `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`, Gemma 4 MTP, and `GGML_CUDA_DISABLE_GRAPHS=1`.
 
 ## Limitations
 

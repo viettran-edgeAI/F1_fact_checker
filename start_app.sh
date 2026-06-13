@@ -199,6 +199,30 @@ check_http_ready() {
   return 1
 }
 
+start_compose_stack_ordered() {
+  local build_images="$1"
+  local force_recreate="$2"
+  local -a recreate_args=()
+
+  if [[ "$force_recreate" == "1" ]]; then
+    recreate_args+=(--force-recreate)
+  fi
+
+  if [[ "$build_images" == "1" ]]; then
+    log "Building Docker Compose images..."
+    docker compose "${COMPOSE_ARGS[@]}" build
+  fi
+
+  log "Starting llm-service first so Gemma/MTP reserves GPU memory before OCR."
+  docker compose "${COMPOSE_ARGS[@]}" up -d "${recreate_args[@]}" llm-service
+  if ! check_http_ready "http://localhost:8081/healthz" "llm-service" 80 3; then
+    report_failure_and_cleanup "llm-service health endpoint did not become ready."
+  fi
+
+  log "Starting remaining services..."
+  docker compose "${COMPOSE_ARGS[@]}" up -d "${recreate_args[@]}" ocr-service fact-check-service web-app
+}
+
 check_cloudflared() {
   if ! command -v systemctl >/dev/null 2>&1; then
     warn "systemctl not found; cannot verify cloudflared service."
@@ -253,13 +277,13 @@ if (( BUILD_IMAGES == 1 )); then
     unset DEPS_CACHE_BUSTER || true
     log "Starting F1 fact-check stack with Docker Compose (image rebuild enabled)..."
   fi
-  if ! docker compose "${COMPOSE_ARGS[@]}" up -d --build; then
+  if ! start_compose_stack_ordered 1 0; then
     report_failure_and_cleanup "Compose startup failed."
   fi
 else
   unset DEPS_CACHE_BUSTER || true
   log "Starting F1 fact-check stack with Docker Compose (no rebuild, recreate containers)..."
-  if ! docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate; then
+  if ! start_compose_stack_ordered 0 1; then
     report_failure_and_cleanup "Compose startup failed."
   fi
 fi

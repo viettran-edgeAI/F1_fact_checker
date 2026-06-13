@@ -1,10 +1,10 @@
 # Project Progress
 
-Date: 2026-06-13
+Date: 2026-06-14
 
 ## Current Status
 
-The repository refactor is substantially complete. The application now has an end-to-end path for text, URL, and image fact-checking, including staged multi-claim and multi-route orchestration plus real streaming from `fact-check-service` through `web-app` to the browser. The current live pipeline has been validated against the JSONL F1 fact-check case suite through Docker-backed `llm-service`, `fact-check-service`, OCR dependency startup, local DB retrieval, and Brave-backed web retrieval. The latest update added SSE-backed stage events, live Gemma verdict token streaming, serialized session persistence on `done`, claim context completion (`claim_context_completion`) before retrieval, updated no-F1 early-return wording, throughput metadata propagation, richer article-body evidence capture, and a refreshed browser result layout.
+The repository refactor is substantially complete. The application now has an end-to-end path for text, URL, and image fact-checking, including staged multi-claim and multi-route orchestration plus real streaming from `fact-check-service` through `web-app` to the browser. The current live pipeline has been validated against the JSONL F1 fact-check case suite through Docker-backed `llm-service`, `fact-check-service`, OCR dependency startup, local DB retrieval, and Brave-backed web retrieval. The latest update added SSE-backed stage events, live Gemma verdict token streaming, serialized session persistence on `done`, claim context completion (`claim_context_completion`) before retrieval, updated no-F1 early-return wording, throughput metadata propagation, richer article-body evidence capture, active Gemma MTP speculative decoding support, and a refreshed browser result layout.
 
 ## Completed
 
@@ -23,7 +23,9 @@ The repository refactor is substantially complete. The application now has an en
 - Docker Compose now mounts `configs/` into `fact-check-service` and sets `FACT_FAISS_INDEX_PATH` so the container loads the existing FAISS index instead of rebuilding vectors on first structured retrieval.
 - Deterministic route and verdict safeguards are in place for stable local-DB patterns covered by the regression suite, including race winners, championship winners, driver title counts, driver/team/season checks, and known circuit facts.
 - `llm-service` supports explicit request-level `enable_thinking` control and can report throughput metadata such as `tokens_per_second`; streamed `done` responses now carry the throughput value through the verdict path.
-- Docker Compose now sets `LLM_CTX_SIZE=12288` for `llm-service` so verdict prompts can carry richer compacted web evidence.
+- Docker Compose now runs `llm-service` with the tested full-stack Gemma 4 MTP profile: `LLM_CTX_SIZE=8192`, `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`, `LLM_MTP_ENABLED=1`, `LLM_SPEC_DRAFT_N_MAX=2`, and `GGML_CUDA_DISABLE_GRAPHS=1`.
+- `start_app.sh` now stages GPU startup by loading `llm-service` and waiting for its health endpoint before starting OCR and the dependent services.
+- The bundled llama.cpp runtime was rebuilt to version `9625`, which can load the local Gemma 4 assistant MTP drafter.
 - `fact-check-service` still uses non-thinking mode for extraction, classification, and query prompts, and keeps verdict JSON compact so final aggregation does not exhaust the context window.
 - `fact-check-service` now returns `No information related to F1 could be extracted.` for responses with no F1-related checkable claim.
 - `ocr-service` defaults now point to PP-OCRv6 small detection and recognition models.

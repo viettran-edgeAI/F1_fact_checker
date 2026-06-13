@@ -15,6 +15,7 @@ The repository is organized around four runtime services:
 2. Read the service docs for the blocks you care about:
    - [OCR service](docs/ocr_service.md)
    - [LLM service](docs/llm_service.md)
+   - [LLM MTP activation](docs/llm_mtp_activation.md)
    - [Fact-check service](docs/fact_check_service.md)
    - [Web app](docs/web_app.md)
 3. Check the current progress note: [docs/project_progress.md](docs/project_progress.md)

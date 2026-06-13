@@ -25,6 +25,7 @@ This document describes the current repository layout only. It intentionally sta
 │   ├── fact_check_service.md
 │   ├── f1_source_policy.md
 │   ├── knowledge_database_build_process.md
+│   ├── llm_mtp_activation.md
 │   ├── llm_service.md
 │   ├── ocr_service.md
 │   ├── project_diary.md

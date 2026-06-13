@@ -60,7 +60,7 @@ It exposes the main blocking and streaming verification endpoints for text, URL,
 
 ### `llm-service`
 
-This service wraps a local `llama-server` process running a Gemma GGUF model. It provides a small HTTP API for prompt execution and returns model answers plus timing, usage, and streaming metadata. It does not decide fact-check logic; it is the prompt execution backend used by `fact-check-service`.
+This service wraps a local `llama-server` process running a Gemma GGUF model. It provides a small HTTP API for prompt execution and returns model answers plus timing, usage, and streaming metadata. Docker Compose currently enables the tested Gemma 4 MTP speculative decoding profile with the QAT target model, dedicated MTP draft model, 8,192-token context, and CUDA graph capture disabled for Jetson stability. The service does not decide fact-check logic; it is the prompt execution backend used by `fact-check-service`.
 
 ### `ocr-service`
 
