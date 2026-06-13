@@ -11,7 +11,7 @@ models/llm/
 # models/**/.cache/
 data/
 wheels/
-tests/*
+tests/
 !tests/test_f1_knowledge_database.py
 !tests/test_knowledge_database_build_process.py
 !tests/f1_fact_check_jsonl_runner.py
