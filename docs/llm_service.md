@@ -124,7 +124,7 @@ Key environment variables:
 --ctx-size 8192 --batch-size 512 --ubatch-size 128 --spec-type draft-mtp --spec-draft-n-max 2 --model-draft <drafter>
 ```
 
-The Unsloth Gemma 4 QAT model card notes that MTP drafts are verified by the target model, so the acceleration path should not change generated output. The bundled llama.cpp runtime was rebuilt to version `9625` so it can load the Gemma 4 assistant draft architecture. On the current Jetson profile, the service also sets `GGML_CUDA_DISABLE_GRAPHS=1`; without that setting, the target and draft model load but slot initialization can fail during CUDA graph capture. The full stack also uses reduced llama.cpp batch buffers because OCR and LLM share the same 8 GB GPU memory budget. See [llm_mtp_activation.md](/home/viettran_orin/Documents/F1_fact_checker/docs/llm_mtp_activation.md) for the activation and verification process.
+The Unsloth Gemma 4 QAT model card notes that MTP drafts are verified by the target model, so the acceleration path should not change generated output. The bundled llama.cpp runtime was rebuilt to version `9625` so it can load the Gemma 4 assistant draft architecture. On the current Jetson profile, the service also sets `GGML_CUDA_DISABLE_GRAPHS=1`; without that setting, the target and draft model load but slot initialization can fail during CUDA graph capture. The full stack also uses reduced llama.cpp batch buffers because OCR and LLM share the same 8 GB GPU memory budget. The displayed Gemma tok/s is selected from final verdict-generation prompt metrics only. See [llm_mtp_activation.md](/home/viettran_orin/Documents/F1_fact_checker/docs/llm_mtp_activation.md) for the activation and verification process.
 
 ## Integration Points
 

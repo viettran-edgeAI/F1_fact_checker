@@ -267,7 +267,7 @@ class FactCheckOrchestrator:
                 "timings_ms": timings,
                 "route_counts": _route_counts(plans),
                 "f1_relevance": _inferred_relevance(True).model_dump(mode="json"),
-                "gemma_tokens_per_second": _latest_tokens_per_second(self.llm_client),
+                "gemma_tokens_per_second": _verdict_tokens_per_second(self.llm_client),
             },
         )
         _emit(
@@ -831,16 +831,21 @@ def _rewrite_structured_query(claim: ClassifiedClaim, rewritten_text: str) -> st
     return " ".join(part for part in parts if part).strip()
 
 
-def _latest_tokens_per_second(llm_client: LLMClient) -> float | None:
+def _verdict_tokens_per_second(llm_client: LLMClient) -> float | None:
     metrics = getattr(llm_client, "call_metrics", [])
     if not isinstance(metrics, list):
         return None
     for item in reversed(metrics):
-        if isinstance(item, dict) and item.get("tokens_per_second") is not None:
-            try:
-                return float(item["tokens_per_second"])
-            except (TypeError, ValueError):
-                return None
+        if not isinstance(item, dict):
+            continue
+        if item.get("prompt_name") != "verdict_generation.md":
+            continue
+        if item.get("tokens_per_second") is None:
+            continue
+        try:
+            return float(item["tokens_per_second"])
+        except (TypeError, ValueError):
+            return None
     return None
 
 

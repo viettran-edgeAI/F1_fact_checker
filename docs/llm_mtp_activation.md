@@ -103,3 +103,18 @@ rtk docker compose exec llm-service python3 -c 'import json, urllib.request; pay
 - With `LLM_CTX_SIZE=8192`, leaving CUDA graphs enabled can still fail during slot initialization. Keep `GGML_CUDA_DISABLE_GRAPHS=1` for this profile.
 - When the full app starts OCR and LLM together, default llama.cpp prompt-processing buffers can still exceed the shared GPU memory budget. Keep `LLM_BATCH_SIZE=512` and `LLM_UBATCH_SIZE=128` unless a full `./start_app.sh --build` run verifies larger values.
 - Do not start OCR before LLM on the MTP profile. Load `llm-service` first, then OCR and the dependent services.
+- A controlled `llm-service`-only sweep over the actual verdict-generation prompt shape found `LLM_SPEC_DRAFT_N_MAX=2` was fastest for the final website-reported Gemma step. A free-form long-text prompt favored a lower value, so use verdict-shaped prompts when tuning the displayed tok/s metric.
+
+## Verdict Throughput Sweep
+
+The website displays Gemma throughput from final verdict generation. The tuning sweep used a verdict-style JSON prompt with `max_tokens=384` and `enable_thinking=false`.
+
+| Profile | Median tok/s | Mean tok/s |
+| --- | ---: | ---: |
+| MTP disabled | 33.72 | 33.68 |
+| `LLM_SPEC_DRAFT_N_MAX=1` | 45.20 | 44.84 |
+| `LLM_SPEC_DRAFT_N_MAX=2` | 51.66 | 52.39 |
+| `LLM_SPEC_DRAFT_N_MAX=3` | 48.71 | 49.20 |
+| `LLM_SPEC_DRAFT_N_MAX=4` | 44.40 | 44.54 |
+| `LLM_SPEC_DRAFT_N_MAX=5` | 38.45 | 39.62 |
+| `LLM_SPEC_DRAFT_N_MAX=6` | 38.16 | 37.55 |

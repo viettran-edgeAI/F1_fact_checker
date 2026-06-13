@@ -24,6 +24,7 @@ The repository refactor is substantially complete. The application now has an en
 - Deterministic route and verdict safeguards are in place for stable local-DB patterns covered by the regression suite, including race winners, championship winners, driver title counts, driver/team/season checks, and known circuit facts.
 - `llm-service` supports explicit request-level `enable_thinking` control and can report throughput metadata such as `tokens_per_second`; streamed `done` responses now carry the throughput value through the verdict path.
 - Docker Compose now runs `llm-service` with the tested full-stack Gemma 4 MTP profile: `LLM_CTX_SIZE=8192`, `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`, `LLM_MTP_ENABLED=1`, `LLM_SPEC_DRAFT_N_MAX=2`, and `GGML_CUDA_DISABLE_GRAPHS=1`.
+- The displayed Gemma tok/s now comes from final verdict-generation prompt metrics rather than whichever earlier LLM prompt ran last.
 - `start_app.sh` now stages GPU startup by loading `llm-service` and waiting for its health endpoint before starting OCR and the dependent services.
 - The bundled llama.cpp runtime was rebuilt to version `9625`, which can load the local Gemma 4 assistant MTP drafter.
 - `fact-check-service` still uses non-thinking mode for extraction, classification, and query prompts, and keeps verdict JSON compact so final aggregation does not exhaust the context window.
