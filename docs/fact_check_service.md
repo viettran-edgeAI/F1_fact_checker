@@ -38,14 +38,14 @@ The normalized clean-text flow is:
 4. return early if no F1-related checkable claim is found
 5. classify each claim and derive internal `required_routes`
 6. apply deterministic route safeguards for known structured, web, and mixed claim patterns
-7. build route worklists for structured and web execution
+7. build route worklists for structured and web execution without calling Gemma
 8. run claim context completion for executable claims before retrieval
 9. run the structured route phase for every claim that requires local evidence, refreshing `structured_query` when the completed text changes
 10. run the web route phase for every claim that requires internet evidence, using the completed standalone claim text before search-query generation
 11. consolidate route evidence back into per-claim bundles
 12. use deterministic structured verdicts for high-confidence local DB patterns when available
 13. generate remaining claim verdicts with Gemma using request-level thinking control, streaming verdict tokens when the `/stream` endpoints are used
-14. aggregate the final verdict and response metadata
+14. deterministically aggregate the final verdict and response metadata
 
 The text, URL, and image endpoints all converge on the same normalized clean-text orchestration path. URL input is fetched and converted to visible text first. Image input is sent to `ocr-service`, then the returned normalized text uses the same claim extraction, routing, retrieval, and early-return behavior.
 

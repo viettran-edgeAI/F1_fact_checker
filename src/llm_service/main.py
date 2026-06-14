@@ -35,7 +35,7 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", f"http://{LLAMA_HOST}:{LLA
 LLM_HOST = os.environ.get("LLM_HOST", "0.0.0.0")
 LLM_PORT = int(os.environ.get("LLM_PORT", "8081"))
 
-DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "8192"))
+DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "12288"))
 DEFAULT_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "160"))
 DEFAULT_THINKING_MAX_TOKENS = int(
     os.environ.get("LLM_THINKING_MAX_TOKENS", os.environ.get("LLM_MAX_TOKENS_THINKING", "768"))

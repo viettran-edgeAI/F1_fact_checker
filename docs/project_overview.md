@@ -21,11 +21,11 @@ The active verification model is:
 2. extract Formula 1-related checkable claims
 3. return early when no F1-related checkable claim is found
 4. classify each claim into a retrieval route
-5. complete claim context after route planning and before retrieval so executable claims keep source context
+5. deterministically plan claim execution routes, then complete claim context after route planning and before retrieval so executable claims keep source context
 6. execute structured retrieval, web retrieval, or both
 7. generate per-claim verdicts from the evidence
 8. stream backend stage events and live Gemma verdict tokens to the browser when the streaming endpoints are used
-9. aggregate the final fact-check result for the UI or API caller
+9. deterministically aggregate the final fact-check result for the UI or API caller
 
 At a high level:
 
@@ -50,11 +50,11 @@ This is the center of the system. It owns:
 
 - claim extraction
 - claim classification
-- route planning
+- deterministic route planning
 - Gemma-based claim context completion before local or web retrieval
 - structured retrieval from the local F1 knowledge base
 - web retrieval through Brave search/context plus source-policy evidence ranking
-- verdict generation and final response aggregation
+- verdict generation and deterministic final response aggregation
 
 It exposes the main blocking and streaming verification endpoints for text, URL, and image inputs.
 

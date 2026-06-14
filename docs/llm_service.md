@@ -99,7 +99,7 @@ Key environment variables:
 - `LLAMA_SERVER_URL`: base URL when connecting to an existing server
 - `LLM_HOST` / `LLM_PORT`: bind address for the FastAPI wrapper
 - `LLM_MODEL_ALIAS`: model label returned in responses
-- `LLM_CTX_SIZE`: context window size passed to `llama-server`; Docker Compose currently sets this to `8192` for the tested Jetson Gemma 4 MTP profile
+- `LLM_CTX_SIZE`: context window size passed to `llama-server`; Docker Compose currently sets this to `12288` for the tested Jetson Gemma 4 MTP profile
 - `LLM_MAX_TOKENS`: default output cap for fast mode
 - `LLM_THINKING_MAX_TOKENS` or `LLM_MAX_TOKENS_THINKING`: default output cap for thinking mode
 - `LLM_TEMPERATURE`, `LLM_TOP_P`, `LLM_TOP_K`: generation controls
@@ -121,7 +121,7 @@ Key environment variables:
 `llm-service` starts Gemma with llama.cpp MTP speculative decoding when `LLM_MTP_ENABLED=1`. Docker Compose enables the tested Jetson profile by default. The target model is `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, and the local MTP drafter is `models/llm/mtp/gemma-4-E2B-it-Q4_0-MTP.gguf`:
 
 ```text
---ctx-size 8192 --batch-size 512 --ubatch-size 128 --spec-type draft-mtp --spec-draft-n-max 2 --model-draft <drafter>
+--ctx-size 12288 --batch-size 512 --ubatch-size 128 --spec-type draft-mtp --spec-draft-n-max 2 --model-draft <drafter>
 ```
 
 The Unsloth Gemma 4 QAT model card notes that MTP drafts are verified by the target model, so the acceleration path should not change generated output. The bundled llama.cpp runtime was rebuilt to version `9625` so it can load the Gemma 4 assistant draft architecture. On the current Jetson profile, the service also sets `GGML_CUDA_DISABLE_GRAPHS=1`; without that setting, the target and draft model load but slot initialization can fail during CUDA graph capture. The full stack also uses reduced llama.cpp batch buffers because OCR and LLM share the same 8 GB GPU memory budget. The displayed Gemma tok/s is selected from final verdict-generation prompt metrics only. See [llm_mtp_activation.md](/home/viettran_orin/Documents/F1_fact_checker/docs/llm_mtp_activation.md) for the activation and verification process.
@@ -139,7 +139,7 @@ The service does not know anything about structured facts, Brave Search, or F1 r
 
 ## GPU Runtime
 
-Docker Compose runs `llm-service` with the NVIDIA runtime and `NVIDIA_VISIBLE_DEVICES=all`. `LLM_GPU_LAYERS` must be greater than zero for Gemma inference to use CUDA offload. The current Compose profile uses `LLM_GPU_LAYERS=all`, `LLM_FIT=on`, `LLM_CTX_SIZE=8192`, `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`, Gemma 4 MTP, and `GGML_CUDA_DISABLE_GRAPHS=1`.
+Docker Compose runs `llm-service` with the NVIDIA runtime and `NVIDIA_VISIBLE_DEVICES=all`. `LLM_GPU_LAYERS` must be greater than zero for Gemma inference to use CUDA offload. The current Compose profile uses `LLM_GPU_LAYERS=all`, `LLM_FIT=on`, `LLM_CTX_SIZE=12288`, `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`, Gemma 4 MTP, and `GGML_CUDA_DISABLE_GRAPHS=1`.
 
 ## Limitations
 

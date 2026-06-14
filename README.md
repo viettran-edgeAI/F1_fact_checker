@@ -75,7 +75,7 @@ flowchart TD
 
     H -->|Yes| J["Gemma: classify each claim<br/>(instant mode)"]
 
-    J --> K["Gemma: claim execution planning<br/>(instant mode)"]
+    J --> K["Deterministic route planning<br/>"]
 
     K --> L["Claim list with required routes"]
 
@@ -94,7 +94,7 @@ flowchart TD
 
     Q --> R["Claim-level verdict"]
 
-    R --> S["Gemma: aggregate final result<br/>(thinking mode)"]
+    R --> S["Deterministic final aggregation"]
 
     S --> T["Final fact-check result<br/>Overall verdict + claim verdicts + evidence"]
 ```

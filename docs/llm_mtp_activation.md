@@ -9,7 +9,7 @@ Docker Compose runs the tested Jetson MTP profile:
 - target model: `/models/llm/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`
 - MTP draft model: `/models/llm/mtp/gemma-4-E2B-it-Q4_0-MTP.gguf`
 - llama.cpp runtime: version `9625` or newer
-- context window: `LLM_CTX_SIZE=8192`
+- context window: `LLM_CTX_SIZE=12288`
 - batch buffers: `LLM_BATCH_SIZE=512`, `LLM_UBATCH_SIZE=128`
 - draft depth: `LLM_SPEC_DRAFT_N_MAX=2`
 - CUDA graph capture: disabled with `GGML_CUDA_DISABLE_GRAPHS=1`
@@ -17,7 +17,7 @@ Docker Compose runs the tested Jetson MTP profile:
 The service uses llama.cpp speculative decoding arguments equivalent to:
 
 ```text
---ctx-size 8192
+--ctx-size 12288
 --batch-size 512
 --ubatch-size 128
 --spec-type draft-mtp
@@ -100,7 +100,7 @@ rtk docker compose exec llm-service python3 -c 'import json, urllib.request; pay
 
 - A bundled llama.cpp runtime without Gemma 4 assistant support fails with `unknown model architecture: 'gemma4-assistant'`.
 - With the rebuilt runtime, `LLM_CTX_SIZE=12288` can exceed available Jetson CUDA memory when MTP is enabled.
-- With `LLM_CTX_SIZE=8192`, leaving CUDA graphs enabled can still fail during slot initialization. Keep `GGML_CUDA_DISABLE_GRAPHS=1` for this profile.
+- With `LLM_CTX_SIZE=12288`, leaving CUDA graphs enabled can still fail during slot initialization. Keep `GGML_CUDA_DISABLE_GRAPHS=1` for this profile.
 - When the full app starts OCR and LLM together, default llama.cpp prompt-processing buffers can still exceed the shared GPU memory budget. Keep `LLM_BATCH_SIZE=512` and `LLM_UBATCH_SIZE=128` unless a full `./start_app.sh --build` run verifies larger values.
 - Do not start OCR before LLM on the MTP profile. Load `llm-service` first, then OCR and the dependent services.
 - A controlled `llm-service`-only sweep over the actual verdict-generation prompt shape found `LLM_SPEC_DRAFT_N_MAX=2` was fastest for the final website-reported Gemma step. A free-form long-text prompt favored a lower value, so use verdict-shaped prompts when tuning the displayed tok/s metric.

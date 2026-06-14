@@ -142,7 +142,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       LLAMA_SERVER_BIN: /opt/llama.cpp/build/bin/llama-server
       LD_LIBRARY_PATH: /opt/llama.cpp/build/bin:/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu/nvidia
-      LLM_CTX_SIZE: 8192
+      LLM_CTX_SIZE: 12288
       LLM_MTP_ENABLED: 1
       LLM_SPEC_TYPE: draft-mtp
       LLM_SPEC_DRAFT_MODEL_PATH: /models/llm/mtp/gemma-4-E2B-it-Q4_0-MTP.gguf

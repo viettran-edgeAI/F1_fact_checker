@@ -22,10 +22,10 @@ Pre-extracted web content optimized for AI agents, LLM grounding, and RAG pipeli
 | `count` | query | integer | No | The maximum number of search results considered to select the LLM context data. The default is 20 and the maximum is 50. |
 | `spellcheck` | query | boolean | No | Whether to enable spellcheck on the query. |
 | `maximum_number_of_urls` | query | integer | No | Maximum number of different URLs to include in LLM context. |
-| `maximum_number_of_tokens` | query | integer | No | Approximate maximum number of tokens to include in context. The default is `8192` and maximum is `32768`. |
+| `maximum_number_of_tokens` | query | integer | No | Approximate maximum number of tokens to include in context. The default is `12288` and maximum is `32768`. |
 | `maximum_number_of_snippets` | query | integer | No | Maximum number of different snippets (or chunks of text) to include in LLM context. The default is `50` and maximum is `256`. |
 | `context_threshold_mode` | query | string | No | The mode to use to determine the threshold for including content in context. Default is `balanced`. |
-| `maximum_number_of_tokens_per_url` | query | integer | No | Maximum number of tokens to include per URL. The default is `4096` and maximum is `8192`. |
+| `maximum_number_of_tokens_per_url` | query | integer | No | Maximum number of tokens to include per URL. The default is `4096` and maximum is `12288`. |
 | `maximum_number_of_snippets_per_url` | query | integer | No | Maximum number of snippets to include per URL. The default is `50` and maximum is `100`. |
 | `goggles` | query | string | No | The goggle url or definition to rerank search results. |
 | `freshness` | query | string | No | Filters search results by page age. The age of a page is determined by the most relevant date reported by the content, such as its published or last modified date. The following values are supported: - **pd** - Pages aged 24 hours or less. - **pw** - Pages aged 7 days or less. - **pm** - Pages aged 31 days or less. - **py** - Pages aged 365 days or less. - **YYYY-MM-DDtoYYYY-MM-DD** - A custom date range is also supported by specifying start and end dates e.g. `2022-04-01to2022-07-30`. |
